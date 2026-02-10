@@ -211,11 +211,31 @@ export const getStats = async (req, res) => {
       return acc;
     }, {});
 
+    // Calculate predicted savings: based on well-managed items
+    // Items not expiring soon and not low stock = prevented waste
+    const wellManagedItems = items.filter((item) => {
+      if (!item.expiry_date) return true; // No expiry concern
+      const daysToExpiry = Math.ceil(
+        (new Date(item.expiry_date) - new Date()) / (1000 * 60 * 60 * 24)
+      );
+      const daysLeft = item.daily_usage > 0 ? item.quantity / item.daily_usage : 999;
+      return daysToExpiry >= 7 && daysLeft >= 3; // Not expiring soon and not low stock
+    }).length;
+    
+    // Estimate: $5 average value per well-managed item
+    const predictedSavings = totalItems > 0 ? Math.round(wellManagedItems * 5) : 0;
+    
+    // Calculate carbon reduced: based on waste prevention
+    // Each item saved from waste = ~0.5kg CO2 reduction
+    const carbonReduced = totalItems > 0 ? Math.round((wellManagedItems * 0.5) / 1000 * 100) / 100 : 0;
+
     res.json({
       totalItems,
       lowStockItems,
       expiringSoon,
       categoryCounts,
+      predictedSavings,
+      carbonReduced,
     });
   } catch (error) {
     console.error('Get stats error:', error);

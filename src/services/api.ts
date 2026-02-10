@@ -17,6 +17,8 @@ export interface Stats {
   lowStockItems: number;
   expiringSoon: number;
   categoryCounts: Record<string, number>;
+  predictedSavings: number;
+  carbonReduced: number;
 }
 
 const getAuthHeaders = () => {

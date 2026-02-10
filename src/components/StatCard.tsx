@@ -5,6 +5,8 @@ interface StatCardProps {
   value: number;
   icon: ReactNode;
   color: 'green' | 'orange' | 'red';
+  prefix?: string;
+  suffix?: string;
 }
 
 const colorClasses = {
@@ -13,13 +15,15 @@ const colorClasses = {
   red: 'bg-red-100 text-red-600',
 };
 
-export const StatCard = ({ title, value, icon, color }: StatCardProps) => {
+export const StatCard = ({ title, value, icon, color, prefix, suffix }: StatCardProps) => {
   return (
     <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 hover:shadow-md transition-shadow">
       <div className="flex items-center justify-between">
         <div>
           <p className="text-gray-600 text-sm font-medium mb-1">{title}</p>
-          <p className="text-3xl font-bold text-gray-800">{value}</p>
+          <p className="text-3xl font-bold text-gray-800">
+            {prefix}{value.toLocaleString()}{suffix}
+          </p>
         </div>
         <div className={`p-3 rounded-lg ${colorClasses[color]}`}>
           {icon}

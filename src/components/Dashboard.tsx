@@ -347,15 +347,17 @@ export const Dashboard = () => {
                 />
                 <StatCard
                   title="Predicted Savings"
-                  value={15430}
+                  value={stats?.predictedSavings || 0}
                   icon={<Download className="w-6 h-6" />}
                   color="green"
+                  prefix="$"
                 />
                 <StatCard
                   title="Carbon Reduced"
-                  value={2}
+                  value={stats?.carbonReduced || 0}
                   icon={<Leaf className="w-6 h-6" />}
                   color="green"
+                  suffix="kg CO₂"
                 />
               </div>
 
@@ -415,8 +417,8 @@ export const Dashboard = () => {
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-4">
                 <StatCard title="Total Items" value={stats?.totalItems || 0} icon={<Package className="w-6 h-6" />} color="green" />
                 <StatCard title="Critical Stock" value={stats?.lowStockItems || 0} icon={<AlertTriangle className="w-6 h-6" />} color="orange" />
-                <StatCard title="Predicted Savings" value={15430} icon={<Download className="w-6 h-6" />} color="green" />
-                <StatCard title="Carbon Reduced" value={2} icon={<Leaf className="w-6 h-6" />} color="green" />
+                <StatCard title="Predicted Savings" value={stats?.predictedSavings || 0} icon={<Download className="w-6 h-6" />} color="green" prefix="$" />
+                <StatCard title="Carbon Reduced" value={stats?.carbonReduced || 0} icon={<Leaf className="w-6 h-6" />} color="green" suffix="kg CO₂" />
               </div>
             </div>
 
