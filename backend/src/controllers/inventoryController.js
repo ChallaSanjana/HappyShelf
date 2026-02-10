@@ -1,37 +1,26 @@
-import { supabase } from '../config/supabase.js';
+import mongoose from 'mongoose';
+import Item from '../models/Item.js';
 
-// Dev fallback: simple in-memory store when SUPABASE_* are placeholders
-const isDevFallback = () => {
-  const url = process.env.SUPABASE_URL || '';
-  const key = process.env.SUPABASE_SERVICE_KEY || '';
-  return url.includes('example') || key.includes('example');
-};
-
-const devInventory = new Map(); // userId -> [items]
+// In-memory storage fallback for development when MongoDB is unavailable
+const devInventory = new Map(); // userId -> items[]
 let nextItemId = 1;
 
-function ensureUserStore(userId) {
-  if (!devInventory.has(userId)) devInventory.set(userId, []);
+function getUserItems(userId) {
+  if (!devInventory.has(userId)) {
+    devInventory.set(userId, []);
+  }
   return devInventory.get(userId);
 }
 
 export const getItems = async (req, res) => {
   try {
-    if (isDevFallback()) {
-      const userId = req.user.userId;
-      const items = ensureUserStore(userId).slice().sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
-      return res.json({ items });
+    // Check MongoDB connection - use in-memory fallback if unavailable
+    if (!mongoose.connection.readyState) {
+      const items = getUserItems(req.user.userId);
+      return res.json({ items: items.slice().sort((a, b) => new Date(b.created_at) - new Date(a.created_at)) });
     }
-    const { data: items, error } = await supabase
-      .from('inventory_items')
-      .select('*')
-      .eq('user_id', req.user.userId)
-      .order('created_at', { ascending: false });
-
-    if (error) {
-      throw error;
-    }
-
+    
+    const items = await Item.find({ user_id: req.user.userId }).sort({ createdAt: -1 });
     res.json({ items });
   } catch (error) {
     console.error('Get items error:', error);
@@ -47,12 +36,12 @@ export const createItem = async (req, res) => {
       return res.status(400).json({ error: 'Missing required fields' });
     }
 
-    if (isDevFallback()) {
-      const userId = req.user.userId;
-      const store = ensureUserStore(userId);
-      const item = {
-        id: nextItemId++,
-        user_id: userId,
+    // Check MongoDB connection - use in-memory fallback if unavailable
+    if (!mongoose.connection.readyState) {
+      const items = getUserItems(req.user.userId);
+      const newItem = {
+        id: `dev_${nextItemId++}`,
+        user_id: req.user.userId,
         name,
         category,
         quantity: parseInt(quantity),
@@ -61,28 +50,19 @@ export const createItem = async (req, res) => {
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       };
-      store.push(item);
-      return res.status(201).json({ message: 'Item created successfully (dev)', item });
+      items.push(newItem);
+      console.log(`✓ Item created (in-memory): ${name}`);
+      return res.status(201).json({ message: 'Item created successfully (dev mode)', item: newItem });
     }
 
-    const { data: newItem, error } = await supabase
-      .from('inventory_items')
-      .insert([
-        {
-          user_id: req.user.userId,
-          name,
-          category,
-          quantity: parseInt(quantity),
-          daily_usage: parseFloat(daily_usage),
-          expiry_date: expiry_date || null,
-        },
-      ])
-      .select()
-      .single();
-
-    if (error) {
-      throw error;
-    }
+    const newItem = await Item.create({
+      user_id: req.user.userId,
+      name,
+      category,
+      quantity: parseInt(quantity),
+      daily_usage: parseFloat(daily_usage),
+      expiry_date: expiry_date || null,
+    });
 
     res.status(201).json({ message: 'Item created successfully', item: newItem });
   } catch (error) {
@@ -96,9 +76,23 @@ export const updateItem = async (req, res) => {
     const { id } = req.params;
     const { name, category, quantity, daily_usage, expiry_date } = req.body;
 
-    const updateData = {
-      updated_at: new Date().toISOString(),
-    };
+    // Check MongoDB connection - use in-memory fallback if unavailable
+    if (!mongoose.connection.readyState) {
+      const items = getUserItems(req.user.userId);
+      const item = items.find(it => it.id === id);
+      if (!item) {
+        return res.status(404).json({ error: 'Item not found' });
+      }
+      if (name !== undefined) item.name = name;
+      if (category !== undefined) item.category = category;
+      if (quantity !== undefined) item.quantity = parseInt(quantity);
+      if (daily_usage !== undefined) item.daily_usage = parseFloat(daily_usage);
+      if (expiry_date !== undefined) item.expiry_date = expiry_date || null;
+      item.updated_at = new Date().toISOString();
+      return res.json({ message: 'Item updated successfully (dev mode)', item });
+    }
+
+    const updateData = {};
 
     if (name !== undefined) updateData.name = name;
     if (category !== undefined) updateData.category = category;
@@ -106,32 +100,11 @@ export const updateItem = async (req, res) => {
     if (daily_usage !== undefined) updateData.daily_usage = parseFloat(daily_usage);
     if (expiry_date !== undefined) updateData.expiry_date = expiry_date || null;
 
-    if (isDevFallback()) {
-      const userId = req.user.userId;
-      const store = ensureUserStore(userId);
-      const idx = store.findIndex((it) => String(it.id) === String(id));
-      if (idx === -1) return res.status(404).json({ error: 'Item not found (dev)' });
-      const item = store[idx];
-      if (name !== undefined) item.name = name;
-      if (category !== undefined) item.category = category;
-      if (quantity !== undefined) item.quantity = parseInt(quantity);
-      if (daily_usage !== undefined) item.daily_usage = parseFloat(daily_usage);
-      if (expiry_date !== undefined) item.expiry_date = expiry_date || null;
-      item.updated_at = new Date().toISOString();
-      return res.json({ message: 'Item updated successfully (dev)', item });
-    }
-
-    const { data: updatedItem, error } = await supabase
-      .from('inventory_items')
-      .update(updateData)
-      .eq('id', id)
-      .eq('user_id', req.user.userId)
-      .select()
-      .single();
-
-    if (error) {
-      throw error;
-    }
+    const updatedItem = await Item.findOneAndUpdate(
+      { _id: id, user_id: req.user.userId },
+      updateData,
+      { new: true }
+    );
 
     if (!updatedItem) {
       return res.status(404).json({ error: 'Item not found' });
@@ -147,23 +120,25 @@ export const updateItem = async (req, res) => {
 export const deleteItem = async (req, res) => {
   try {
     const { id } = req.params;
-    if (isDevFallback()) {
-      const userId = req.user.userId;
-      const store = ensureUserStore(userId);
-      const idx = store.findIndex((it) => String(it.id) === String(id));
-      if (idx === -1) return res.status(404).json({ error: 'Item not found (dev)' });
-      store.splice(idx, 1);
-      return res.json({ message: 'Item deleted successfully (dev)' });
+
+    // Check MongoDB connection - use in-memory fallback if unavailable
+    if (!mongoose.connection.readyState) {
+      const items = getUserItems(req.user.userId);
+      const index = items.findIndex(it => it.id === id);
+      if (index === -1) {
+        return res.status(404).json({ error: 'Item not found' });
+      }
+      items.splice(index, 1);
+      return res.json({ message: 'Item deleted successfully (dev mode)' });
     }
 
-    const { error } = await supabase
-      .from('inventory_items')
-      .delete()
-      .eq('id', id)
-      .eq('user_id', req.user.userId);
+    const deletedItem = await Item.findOneAndDelete({
+      _id: id,
+      user_id: req.user.userId,
+    });
 
-    if (error) {
-      throw error;
+    if (!deletedItem) {
+      return res.status(404).json({ error: 'Item not found' });
     }
 
     res.json({ message: 'Item deleted successfully' });
@@ -175,24 +150,17 @@ export const deleteItem = async (req, res) => {
 
 export const getStats = async (req, res) => {
   try {
+    // Check MongoDB connection - use in-memory fallback if unavailable
     let items;
-    if (isDevFallback()) {
-      const userId = req.user.userId;
-      items = ensureUserStore(userId).slice();
+    if (!mongoose.connection.readyState) {
+      items = getUserItems(req.user.userId);
     } else {
-      const { data, error } = await supabase
-        .from('inventory_items')
-        .select('*')
-        .eq('user_id', req.user.userId);
-
-      if (error) {
-        throw error;
-      }
-
-      items = data;
+      // Fetch all items for the user (metrics calculated on-the-fly, not stored in DB)
+      items = await Item.find({ user_id: req.user.userId });
     }
 
     const totalItems = items.length;
+    
     const lowStockItems = items.filter((item) => {
       const daysLeft = item.daily_usage > 0 ? item.quantity / item.daily_usage : 999;
       return daysLeft < 3;

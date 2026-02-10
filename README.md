@@ -1,6 +1,6 @@
 # HappyShelf - Inventory Management System
 
-A complete inventory management application with JWT authentication, built with React, Express, and Supabase.
+A complete inventory management application with JWT authentication, built with React, Express, and MongoDB.
 
 ## Features
 
@@ -22,7 +22,7 @@ A complete inventory management application with JWT authentication, built with 
 ### Backend
 - Node.js + Express
 - JWT authentication with bcrypt
-- Supabase (PostgreSQL database)
+- MongoDB + Mongoose (NoSQL database)
 - RESTful API design
 
 ## Project Structure
@@ -48,7 +48,10 @@ A complete inventory management application with JWT authentication, built with 
 └── backend/                  # Express backend API
     ├── src/
     │   ├── config/
-    │   │   └── supabase.js   # Supabase client config
+    │   │   └── database.js   # MongoDB connection config
+    │   ├── models/
+    │   │   ├── User.js       # User Mongoose model
+    │   │   └── Item.js       # Item Mongoose model
     │   ├── controllers/
     │   │   ├── authController.js
     │   │   └── inventoryController.js
@@ -63,30 +66,33 @@ A complete inventory management application with JWT authentication, built with 
 
 ## Database Schema
 
-### users
-- `id` (uuid, primary key)
-- `email` (text, unique)
-- `password_hash` (text)
-- `name` (text)
-- `created_at` (timestamptz)
+### Users Collection
+- `_id` (ObjectId, primary key)
+- `email` (String, unique, required)
+- `password_hash` (String, required)
+- `name` (String, required)
+- `createdAt` (Date, auto-generated)
+- `updatedAt` (Date, auto-generated)
 
-### inventory_items
-- `id` (uuid, primary key)
-- `user_id` (uuid, foreign key)
-- `name` (text)
-- `category` (text)
-- `quantity` (integer)
-- `daily_usage` (numeric)
-- `expiry_date` (date, nullable)
-- `created_at` (timestamptz)
-- `updated_at` (timestamptz)
+### Inventory Items Collection
+- `_id` (ObjectId, primary key)
+- `user_id` (ObjectId, reference to Users, required)
+- `name` (String, required)
+- `category` (String, required)
+- `quantity` (Number, required)
+- `daily_usage` (Number, required)
+- `expiry_date` (Date, nullable)
+- `createdAt` (Date, auto-generated)
+- `updatedAt` (Date, auto-generated)
+
+**Note**: Dashboard metrics (totalItems, lowStockItems, expiringSoon, predictedSavings, carbonReduced) are calculated on-the-fly and not stored in the database.
 
 ## Setup Instructions
 
 ### Prerequisites
 - Node.js (v18 or higher)
 - npm or yarn
-- Supabase account
+- MongoDB (local installation or MongoDB Atlas account)
 
 ### 1. Backend Setup
 
@@ -100,11 +106,14 @@ Create a `.env` file in the `backend` directory:
 ```env
 PORT=5000
 JWT_SECRET=your_jwt_secret_here
-SUPABASE_URL=your_supabase_project_url
-SUPABASE_SERVICE_KEY=your_supabase_service_role_key
+MONGODB_URI=mongodb://localhost:27017/happyshelf
+# Or use MongoDB Atlas:
+# MONGODB_URI=mongodb+srv://username:password@cluster.mongodb.net/happyshelf
 ```
 
-Get your Supabase credentials from your Supabase project dashboard.
+**MongoDB Options:**
+- **Local**: Install MongoDB Community Server from [mongodb.com](https://www.mongodb.com/try/download/community)
+- **Cloud**: Create a free cluster at [MongoDB Atlas](https://www.mongodb.com/cloud/atlas/register)
 
 ### 2. Frontend Setup
 
@@ -191,7 +200,8 @@ npm start
 
 ## Notes
 
-- The database schema is automatically created using Supabase migrations
-- RLS policies ensure data isolation between users
-- All API calls require authentication except login/register
+- MongoDB collections are automatically created when data is first inserted
+- User data is isolated by user_id foreign key references
+- All API calls require JWT authentication except login/register endpoints
 - The app uses a clean, modern green theme optimized for production use
+- Dashboard metrics are calculated on-the-fly from inventory data, not stored in database

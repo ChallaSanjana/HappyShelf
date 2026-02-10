@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { inventoryApi, InventoryItem, Stats } from '../services/api';
+import { calculateMetrics } from '../utils/metricsCalculator';
 import { StatCard } from './StatCard';
 import { InventoryTable } from './InventoryTable';
 import { ItemModal } from './ItemModal';
@@ -100,14 +101,17 @@ export const Dashboard = () => {
     loadData();
   }, []);
 
+  // Recalculate metrics whenever items change
+  useEffect(() => {
+    const calculatedStats = calculateMetrics(items);
+    setStats(calculatedStats as Stats);
+  }, [items]);
+
   const loadData = async () => {
     try {
-      const [itemsData, statsData] = await Promise.all([
-        inventoryApi.getItems(),
-        inventoryApi.getStats(),
-      ]);
+      const itemsData = await inventoryApi.getItems();
       setItems(itemsData);
-      setStats(statsData);
+      // Metrics are now calculated via useEffect above
     } catch (error) {
       console.error('Failed to load data:', error);
     } finally {
