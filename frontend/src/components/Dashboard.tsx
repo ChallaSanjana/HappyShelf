@@ -216,6 +216,59 @@ export const Dashboard = () => {
     }
   };
 
+  const handleExport = () => {
+    if (!items || items.length === 0) {
+      alert('No items to export');
+      return;
+    }
+
+    const headers = [
+      'Name',
+      'Category',
+      'Quantity',
+      'Unit',
+      'Daily Usage',
+      'Min Stock Level',
+      'Expiry Date',
+      'Purchase Date',
+      'Storage Location'
+    ];
+
+    const escapeCSV = (val: unknown) => {
+      if (val === null || val === undefined) return '';
+      const str = String(val);
+      if (str.includes(',') || str.includes('"') || str.includes('\n') || str.includes('\r')) {
+        return `"${str.replace(/"/g, '""')}"`;
+      }
+      return str;
+    };
+
+    const csvContent = [
+      headers.join(','),
+      ...items.map(item => [
+        escapeCSV(item.name),
+        escapeCSV(item.category),
+        escapeCSV(item.quantity),
+        escapeCSV(item.unit),
+        escapeCSV(item.daily_usage),
+        escapeCSV(item.min_stock_level),
+        escapeCSV(item.expiry_date),
+        escapeCSV(item.purchase_date),
+        escapeCSV(item.storage_location)
+      ].join(','))
+    ].join('\n');
+
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.setAttribute('href', url);
+    link.setAttribute('download', `happyshelf_inventory_${new Date().toISOString().split('T')[0]}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
   // CSV/JSON import helpers
 
   const handleImportClick = () => {
@@ -418,9 +471,9 @@ export const Dashboard = () => {
                       {isRefreshing ? 'Refreshing...' : 'Refresh'}
                     </button>
                     <button
-                      onClick={() => alert('Export not implemented')}
-                      className="flex items-center gap-2 px-3 py-2 bg-white border border-gray-200 rounded-lg shadow-sm hover:bg-gray-50"
-                    >
+                       onClick={handleExport}
+                       className="flex items-center gap-2 px-3 py-2 bg-white border border-gray-200 rounded-lg shadow-sm hover:bg-gray-50"
+                     >
                       <Download className="w-4 h-4" />
                       Export
                     </button>
