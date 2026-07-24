@@ -2,10 +2,15 @@ import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
 import mongoose from 'mongoose';
 import User from '../models/User.js';
+import { getJwtSecret } from '../middleware/auth.js';
 
 // In-memory storage fallback for development when MongoDB is unavailable
 const devUsers = new Map();
 let nextUserId = 1;
+
+function isDbConnected() {
+  return mongoose.connection.readyState === 1;
+}
 
 export const register = async (req, res) => {
   try {
@@ -15,8 +20,7 @@ export const register = async (req, res) => {
       return res.status(400).json({ error: 'All fields are required' });
     }
 
-    // Check MongoDB connection - use in-memory fallback if unavailable
-    if (!mongoose.connection.readyState) {
+    if (!isDbConnected()) {
       // Dev mode: in-memory user storage
       if (devUsers.has(email)) {
         return res.status(400).json({ error: 'Email already registered' });
@@ -29,7 +33,7 @@ export const register = async (req, res) => {
 
       const token = jwt.sign(
         { userId, email },
-        process.env.JWT_SECRET || 'dev-secret',
+        getJwtSecret(),
         { expiresIn: '7d' }
       );
 
@@ -60,7 +64,7 @@ export const register = async (req, res) => {
     // Generate JWT token
     const token = jwt.sign(
       { userId: newUser._id.toString(), email: newUser.email },
-      process.env.JWT_SECRET || 'dev-secret',
+      getJwtSecret(),
       { expiresIn: '7d' }
     );
 
@@ -83,15 +87,31 @@ export const login = async (req, res) => {
       return res.status(400).json({ error: 'Email and password are required' });
     }
 
-    // Check MongoDB connection
-    if (!mongoose.connection.readyState) {
-      return res.status(503).json({ 
-        error: 'Database unavailable. Please configure MongoDB.',
-        hint: 'Set MONGODB_URI in backend/.env file'
+    if (!isDbConnected()) {
+      const user = devUsers.get(email);
+      if (!user) {
+        return res.status(401).json({ error: 'Invalid email or password' });
+      }
+
+      const isValidPassword = await bcrypt.compare(password, user.password_hash);
+      if (!isValidPassword) {
+        return res.status(401).json({ error: 'Invalid email or password' });
+      }
+
+      const token = jwt.sign(
+        { userId: user.id, email: user.email },
+        getJwtSecret(),
+        { expiresIn: '7d' }
+      );
+
+      console.log(`✓ User logged in (in-memory): ${email}`);
+      return res.json({
+        message: 'Login successful (dev mode)',
+        token,
+        user: { id: user.id, email: user.email, name: user.name },
       });
     }
 
-    // 
     // Find user by email
     const user = await User.findOne({ email }).select('+password_hash');
 
@@ -99,17 +119,15 @@ export const login = async (req, res) => {
       return res.status(401).json({ error: 'Invalid email or password' });
     }
 
-    // Verify password
     const isValidPassword = await bcrypt.compare(password, user.password_hash);
 
     if (!isValidPassword) {
       return res.status(401).json({ error: 'Invalid email or password' });
     }
 
-    // Generate JWT token
     const token = jwt.sign(
       { userId: user._id.toString(), email: user.email },
-      process.env.JWT_SECRET || 'dev-secret',
+      getJwtSecret(),
       { expiresIn: '7d' }
     );
 

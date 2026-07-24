@@ -1,5 +1,15 @@
 import jwt from 'jsonwebtoken';
 
+function getJwtSecret() {
+  if (process.env.JWT_SECRET) return process.env.JWT_SECRET;
+  if (process.env.NODE_ENV === 'production') {
+    // Fail loudly instead of silently signing/verifying tokens with a
+    // secret that's checked into source control.
+    throw new Error('JWT_SECRET must be set in production');
+  }
+  return 'dev-secret';
+}
+
 export const authenticateToken = (req, res, next) => {
   const authHeader = req.headers['authorization'];
   const token = authHeader && authHeader.split(' ')[1];
@@ -9,10 +19,12 @@ export const authenticateToken = (req, res, next) => {
   }
 
   try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const decoded = jwt.verify(token, getJwtSecret());
     req.user = decoded;
     next();
   } catch (error) {
     return res.status(403).json({ error: 'Invalid or expired token' });
   }
 };
+
+export { getJwtSecret };

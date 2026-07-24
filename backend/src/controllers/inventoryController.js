@@ -12,14 +12,21 @@ function getUserItems(userId) {
   return devInventory.get(userId);
 }
 
+// readyState: 0 = disconnected, 1 = connected, 2 = connecting, 3 = disconnecting
+// Only treat the DB as usable when it's fully connected (state 1). Anything
+// else (including "connecting") falls back to in-memory storage instead of
+// letting Mongoose silently buffer/queue the query.
+function isDbConnected() {
+  return mongoose.connection.readyState === 1;
+}
+
 export const getItems = async (req, res) => {
   try {
-    // Check MongoDB connection - use in-memory fallback if unavailable
-    if (!mongoose.connection.readyState) {
+    if (!isDbConnected()) {
       const items = getUserItems(req.user.userId);
       return res.json({ items: items.slice().sort((a, b) => new Date(b.created_at) - new Date(a.created_at)) });
     }
-    
+
     const items = await Item.find({ user_id: req.user.userId }).sort({ createdAt: -1 });
     res.json({ items });
   } catch (error) {
@@ -36,8 +43,7 @@ export const createItem = async (req, res) => {
       return res.status(400).json({ error: 'Missing required fields' });
     }
 
-    // Check MongoDB connection - use in-memory fallback if unavailable
-    if (!mongoose.connection.readyState) {
+    if (!isDbConnected()) {
       const items = getUserItems(req.user.userId);
       const newItem = {
         id: `dev_${nextItemId++}`,
@@ -76,8 +82,7 @@ export const updateItem = async (req, res) => {
     const { id } = req.params;
     const { name, category, quantity, daily_usage, expiry_date } = req.body;
 
-    // Check MongoDB connection - use in-memory fallback if unavailable
-    if (!mongoose.connection.readyState) {
+    if (!isDbConnected()) {
       const items = getUserItems(req.user.userId);
       const item = items.find(it => it.id === id);
       if (!item) {
@@ -121,8 +126,7 @@ export const deleteItem = async (req, res) => {
   try {
     const { id } = req.params;
 
-    // Check MongoDB connection - use in-memory fallback if unavailable
-    if (!mongoose.connection.readyState) {
+    if (!isDbConnected()) {
       const items = getUserItems(req.user.userId);
       const index = items.findIndex(it => it.id === id);
       if (index === -1) {
@@ -150,9 +154,8 @@ export const deleteItem = async (req, res) => {
 
 export const getStats = async (req, res) => {
   try {
-    // Check MongoDB connection - use in-memory fallback if unavailable
     let items;
-    if (!mongoose.connection.readyState) {
+    if (!isDbConnected()) {
       items = getUserItems(req.user.userId);
     } else {
       // Fetch all items for the user (metrics calculated on-the-fly, not stored in DB)
@@ -160,7 +163,7 @@ export const getStats = async (req, res) => {
     }
 
     const totalItems = items.length;
-    
+
     const lowStockItems = items.filter((item) => {
       const daysLeft = item.daily_usage > 0 ? item.quantity / item.daily_usage : 999;
       return daysLeft < 3;
@@ -189,13 +192,16 @@ export const getStats = async (req, res) => {
       const daysLeft = item.daily_usage > 0 ? item.quantity / item.daily_usage : 999;
       return daysToExpiry >= 7 && daysLeft >= 3; // Not expiring soon and not low stock
     }).length;
-    
+
     // Estimate: $5 average value per well-managed item
     const predictedSavings = totalItems > 0 ? Math.round(wellManagedItems * 5) : 0;
-    
+
     // Calculate carbon reduced: based on waste prevention
     // Each item saved from waste = ~0.5kg CO2 reduction
-    const carbonReduced = totalItems > 0 ? Math.round((wellManagedItems * 0.5) / 1000 * 100) / 100 : 0;
+    // NOTE: this now matches src/utils/metricsCalculator.ts exactly (the old
+    // version divided by an extra 1000, which made this endpoint's number
+    // 1000x smaller than what the dashboard displays).
+    const carbonReduced = totalItems > 0 ? Math.round(wellManagedItems * 0.5 * 100) / 100 : 0;
 
     res.json({
       totalItems,
