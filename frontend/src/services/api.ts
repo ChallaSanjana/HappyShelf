@@ -107,3 +107,52 @@ export interface PredictionsResponse {
   model_metadata: ModelMetadata;
   is_ml?: boolean;
 }
+
+export interface TeamMember {
+  id: string;
+  name: string;
+  email: string;
+  role: string;
+  householdId: string;
+}
+
+export const teamApi = {
+  getTeamMembers: async (): Promise<TeamMember[]> => {
+    const response = await fetch(`${API_URL}/team`, {
+      headers: getAuthHeaders(),
+    });
+    if (!response.ok) throw new Error('Failed to fetch team members');
+    const data = await response.json();
+    return data.members;
+  },
+
+  addTeamMember: async (member: Omit<TeamMember, 'id' | 'householdId'> & { password?: string }): Promise<TeamMember> => {
+    const response = await fetch(`${API_URL}/team`, {
+      method: 'POST',
+      headers: getAuthHeaders(),
+      body: JSON.stringify(member),
+    });
+    if (!response.ok) throw new Error('Failed to add team member');
+    const data = await response.json();
+    return data.member;
+  },
+
+  updateTeamMember: async (id: string, member: Partial<Omit<TeamMember, 'id' | 'householdId'>>): Promise<TeamMember> => {
+    const response = await fetch(`${API_URL}/team/${id}`, {
+      method: 'PUT',
+      headers: getAuthHeaders(),
+      body: JSON.stringify(member),
+    });
+    if (!response.ok) throw new Error('Failed to update team member');
+    const data = await response.json();
+    return data.member;
+  },
+
+  deleteTeamMember: async (id: string): Promise<void> => {
+    const response = await fetch(`${API_URL}/team/${id}`, {
+      method: 'DELETE',
+      headers: getAuthHeaders(),
+    });
+    if (!response.ok) throw new Error('Failed to delete team member');
+  },
+};

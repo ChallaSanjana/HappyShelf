@@ -25,9 +25,10 @@ interface InventoryTableProps {
   onEdit: (item: InventoryItem) => void;
   onDelete: (id: string) => void;
   onReorder?: (item: InventoryItem) => void;
+  readOnly?: boolean;
 }
 
-export const InventoryTable = ({ items, onEdit, onDelete, onReorder }: InventoryTableProps) => {
+export const InventoryTable = ({ items, onEdit, onDelete, onReorder, readOnly = false }: InventoryTableProps) => {
   const calculateDaysLeft = (item: InventoryItem) => {
     if (item.daily_usage <= 0) return 'N/A';
     return (item.quantity / item.daily_usage).toFixed(1);
@@ -84,7 +85,7 @@ export const InventoryTable = ({ items, onEdit, onDelete, onReorder }: Inventory
             <th className="px-6 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">Days Left</th>
             <th className="px-6 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">Expiry Date</th>
             <th className="px-6 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">Status</th>
-            <th className="px-6 py-3 text-right text-xs font-medium text-gray-700 uppercase tracking-wider">Actions</th>
+            {!readOnly && <th className="px-6 py-3 text-right text-xs font-medium text-gray-700 uppercase tracking-wider">Actions</th>}
           </tr>
         </thead>
         <tbody className="bg-white divide-y divide-gray-200">
@@ -119,20 +120,22 @@ export const InventoryTable = ({ items, onEdit, onDelete, onReorder }: Inventory
                     {statusLabels[status]}
                   </span>
                 </td>
-                <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
-                  <button onClick={() => onEdit(item)} className="text-green-600 hover:text-green-900 mr-3">
-                    <Pencil className="w-4 h-4" />
-                  </button>
-                  <button
-                    onClick={() => onReorder ? onReorder(item) : alert('Reorder not available')}
-                    className="text-blue-600 hover:text-blue-900 mr-3"
-                  >
-                    Reorder
-                  </button>
-                  <button onClick={() => onDelete(item.id)} className="text-red-600 hover:text-red-900">
-                    <Trash2 className="w-4 h-4" />
-                  </button>
-                </td>
+                {!readOnly && (
+                  <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+                    <button onClick={() => onEdit(item)} className="text-green-600 hover:text-green-900 mr-3">
+                      <Pencil className="w-4 h-4" />
+                    </button>
+                    <button
+                      onClick={() => onReorder ? onReorder(item) : alert('Reorder not available')}
+                      className="text-blue-600 hover:text-blue-900 mr-3"
+                    >
+                      Reorder
+                    </button>
+                    <button onClick={() => onDelete(item.id)} className="text-red-600 hover:text-red-900">
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </td>
+                )}
               </tr>
             );
           })}

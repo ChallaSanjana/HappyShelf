@@ -9,6 +9,7 @@ import {
   Users,
   Settings,
 } from 'lucide-react';
+import { useAuth } from '../contexts/AuthContext';
 
 interface Props {
   mobileOpen?: boolean;
@@ -39,17 +40,31 @@ const items: MenuItemType[] = [
 export const Sidebar: React.FC<Props> = ({ mobileOpen = false, onClose, onNavigate }) => {
   const [active, setActive] = React.useState<string>('dashboard');
   const [collapsed, setCollapsed] = React.useState<Record<string, boolean>>({});
+  const { user } = useAuth();
+  const role = user?.role || 'Viewer';
+
+  const filteredItems = React.useMemo(() => {
+    return items.filter(it => {
+      if (it.key === 'settings') {
+        return role === 'Admin';
+      }
+      if (it.key === 'team') {
+        return role === 'Admin' || role === 'Manager';
+      }
+      return true;
+    });
+  }, [role]);
 
   // Build categories
   const categories = React.useMemo(() => {
     const map = new Map<string, MenuItemType[]>();
-    for (const it of items) {
+    for (const it of filteredItems) {
       const list = map.get(it.category) || [];
       list.push(it);
       map.set(it.category, list);
     }
     return Array.from(map.entries()); // [ [category, items[]], ... ]
-  }, []);
+  }, [filteredItems]);
 
   const activate = (key: string) => {
     setActive(key);
@@ -69,7 +84,7 @@ export const Sidebar: React.FC<Props> = ({ mobileOpen = false, onClose, onNaviga
           window.history.pushState({}, '', url.pathname + url.search + url.hash);
           // dispatch a popstate so other parts of the app can react
           window.dispatchEvent(new PopStateEvent('popstate'));
-        } catch (err) {
+        } catch {
           // fallback to full navigation
           window.location.href = item.href as string;
         }

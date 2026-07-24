@@ -105,7 +105,7 @@ export const ForecastChart: React.FC<Props> = ({ items }) => {
               try {
                 const ctx = chart.ctx;
                 const datasets = chart.data.datasets || [];
-                const idx = datasets.findIndex((d: any) => d.label === 'Reorder Threshold');
+                const idx = datasets.findIndex((d: { label?: string }) => d.label === 'Reorder Threshold');
                 if (idx === -1) return;
                 const meta = chart.getDatasetMeta(idx);
                 if (!meta || !meta.data || meta.data.length === 0) return;
@@ -119,7 +119,7 @@ export const ForecastChart: React.FC<Props> = ({ items }) => {
                 ctx.textAlign = 'right';
                 ctx.fillText('Reorder Threshold', x, y - 8);
                 ctx.restore();
-              } catch (e) {
+              } catch {
                 // swallow draw errors to avoid breaking the chart
               }
             },

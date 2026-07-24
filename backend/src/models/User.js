@@ -12,12 +12,6 @@ const userSchema = new mongoose.Schema(
     password_hash: {
       type: String,
       required: true,
-      // Without `select: false`, User.findOne({ email }) returns the hash by
-      // default and authController's `.select('+password_hash')` calls are
-      // no-ops. toJSON() strips it before responses go out, but that only
-      // protects document methods — a future `.lean()` query would bypass
-      // toJSON entirely and could leak the hash. Excluding it here means it
-      // has to be explicitly opted into, which is the safer default.
       select: false,
     },
     name: {
@@ -25,12 +19,28 @@ const userSchema = new mongoose.Schema(
       required: true,
       trim: true,
     },
+    role: {
+      type: String,
+      enum: ['Admin', 'Manager', 'Staff', 'Viewer'],
+      default: 'Admin',
+    },
+    household_id: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      default: null,
+    },
   },
   {
     timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' },
     collection: 'users',
   }
 );
+
+userSchema.pre('save', function () {
+  if (!this.household_id) {
+    this.household_id = this._id;
+  }
+});
 
 // Virtual for user ID as string
 userSchema.virtual('id').get(function () {
@@ -42,7 +52,11 @@ userSchema.set('toJSON', {
   virtuals: true,
   transform: function (doc, ret) {
     ret.id = ret._id.toString();
+    if (ret.household_id) {
+      ret.householdId = ret.household_id.toString();
+    }
     delete ret._id;
+    delete ret.household_id;
     delete ret.__v;
     delete ret.password_hash;
     return ret;

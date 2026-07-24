@@ -1,6 +1,6 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { useAuth } from '../contexts/AuthContext';
-import { inventoryApi, InventoryItem, Stats, PredictionsResponse } from '../services/api';
+import { inventoryApi, teamApi, TeamMember, InventoryItem, Stats, PredictionsResponse } from '../services/api';
 import { calculateMetrics } from '../utils/metricsCalculator';
 import { StatCard } from './StatCard';
 import { InventoryTable } from './InventoryTable';
@@ -41,10 +41,7 @@ export const Dashboard = () => {
   const [editingItem, setEditingItem] = useState<InventoryItem | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [view, setView] = useState<string>('dashboard');
-  const [teamMembers, setTeamMembers] = useState<Array<{ id: string; name: string; role: string; access: string; }>>([
-    { id: '1', name: 'Alice Johnson', role: 'Manager', access: 'admin' },
-    { id: '2', name: 'Ben Carter', role: 'Staff', access: 'write' },
-  ]);
+  const [teamMembers, setTeamMembers] = useState<TeamMember[]>([]);
 
   const [settingsState, setSettingsState] = useState({
     profileName: user?.name || '',
@@ -52,65 +49,25 @@ export const Dashboard = () => {
     weeklySummary: false,
   });
 
-  // Persist team members and settings per-user so records are not lost across sign-out/sign-in.
-  //
-  // Ordering pitfall this guards against: on mount/user-switch, React runs
-  // effects in declaration order within the same commit. The "load" effect
-  // below calls setTeamMembers/setSettingsState, but that update isn't
-  // visible to the "save" effects until the *next* render — so on their
-  // very first run for a given user, the save effects would still see the
-  // pre-load default state (the hardcoded Alice/Ben sample data) and write
-  // that over whatever the user had actually saved. It self-corrects a
-  // render later, but there's a real window where localStorage holds the
-  // wrong data. skipSaveRef marks each save effect's first run (per user)
-  // to be skipped entirely, so nothing is written until the load effect's
-  // state update has actually landed.
-  const skipSaveRef = useRef<{ team: boolean; settings: boolean }>({ team: true, settings: true });
+  const skipSaveRef = useRef<{ settings: boolean }>({ settings: true });
 
   useEffect(() => {
-    // New user session — the next save for each key should wait for the
-    // load effect below to populate real state first.
-    skipSaveRef.current = { team: true, settings: true };
+    skipSaveRef.current = { settings: true };
   }, [user]);
 
   useEffect(() => {
     if (!user) return;
-    const tmKey = `hs:user:${user.id}:teamMembers`;
     const stKey = `hs:user:${user.id}:settings`;
-    try {
-      const raw = localStorage.getItem(tmKey);
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        if (Array.isArray(parsed)) setTeamMembers(parsed);
-      }
-    } catch (e) {
-      // ignore parse errors
-    }
-
     try {
       const raw = localStorage.getItem(stKey);
       if (raw) {
         const parsed = JSON.parse(raw);
         if (parsed && typeof parsed === 'object') setSettingsState((s) => ({ ...s, ...parsed }));
       }
-    } catch (e) {
+    } catch {
       // ignore parse errors
     }
   }, [user]);
-
-  useEffect(() => {
-    if (!user) return;
-    if (skipSaveRef.current.team) {
-      skipSaveRef.current.team = false;
-      return;
-    }
-    const tmKey = `hs:user:${user.id}:teamMembers`;
-    try {
-      localStorage.setItem(tmKey, JSON.stringify(teamMembers));
-    } catch (e) {
-      // ignore
-    }
-  }, [teamMembers, user]);
 
   useEffect(() => {
     if (!user) return;
@@ -121,10 +78,28 @@ export const Dashboard = () => {
     const stKey = `hs:user:${user.id}:settings`;
     try {
       localStorage.setItem(stKey, JSON.stringify(settingsState));
-    } catch (e) {
+    } catch {
       // ignore
     }
   }, [settingsState, user]);
+
+  const role = user?.role || 'Viewer';
+
+  const fetchTeamMembers = useCallback(async () => {
+    if (!user || (role !== 'Admin' && role !== 'Manager')) return;
+    try {
+      const members = await teamApi.getTeamMembers();
+      setTeamMembers(members);
+    } catch (err) {
+      console.error('Failed to load team members:', err);
+    }
+  }, [user, role]);
+
+  useEffect(() => {
+    if (view === 'team') {
+      fetchTeamMembers();
+    }
+  }, [view, fetchTeamMembers]);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [lastUpdated, setLastUpdated] = useState<string | null>(null);
   // Sidebar.tsx already implements the slide-in/overlay behavior for mobile
@@ -170,7 +145,7 @@ export const Dashboard = () => {
     setIsRefreshing(true);
     try {
       await loadData();
-    } catch (e) {
+    } catch {
       // loadData already logs errors
     } finally {
       setIsRefreshing(false);
@@ -208,14 +183,16 @@ export const Dashboard = () => {
     }
 
     // prefer a backend endpoint if available
-    if ((inventoryApi as any).createOrder) {
+    const api = inventoryApi as unknown as Record<string, (arg: { itemId: string; quantity: number }) => Promise<void>>;
+    if (typeof api.createOrder === 'function') {
       try {
-        await (inventoryApi as any).createOrder({ itemId: item.id, quantity: qty });
+        await api.createOrder({ itemId: item.id, quantity: qty });
         alert('Reorder request submitted');
         return;
-      } catch (e: any) {
-        console.error('Order API failed', e);
-        alert('Failed to submit reorder: ' + (e?.message || e));
+      } catch (e) {
+        const error = e instanceof Error ? e : new Error(String(e));
+        console.error('Order API failed', error);
+        alert('Failed to submit reorder: ' + error.message);
         return;
       }
     }
@@ -229,7 +206,7 @@ export const Dashboard = () => {
       if (editingItem) {
         await inventoryApi.updateItem(editingItem.id, itemData);
       } else {
-        await inventoryApi.createItem(itemData as any);
+        await inventoryApi.createItem(itemData as Omit<InventoryItem, 'id' | 'user_id' | 'created_at' | 'updated_at'>);
       }
       await loadData();
       setIsModalOpen(false);
@@ -246,13 +223,13 @@ export const Dashboard = () => {
     if (input) input.click();
   };
 
-  const parseCSV = (text: string) => {
+  const parseCSV = (text: string): Record<string, string>[] => {
     const lines = text.split(/\r?\n/).filter((l) => l.trim() !== '');
     if (lines.length === 0) return [];
     const headers = lines[0].split(',').map((h) => h.trim());
     const rows = lines.slice(1).map((line) => {
       const values = line.split(',').map((v) => v.trim());
-      const obj: any = {};
+      const obj: Record<string, string> = {};
       headers.forEach((h, i) => {
         obj[h] = values[i] ?? '';
       });
@@ -261,16 +238,16 @@ export const Dashboard = () => {
     return rows;
   };
 
-  const handleFileChange = async (e: any) => {
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const f = e.target.files?.[0];
     if (!f) return;
     try {
       const text = await f.text();
-      let itemsToCreate: any[] = [];
+      let itemsToCreate: Record<string, unknown>[] = [];
       if (f.type === 'application/json' || f.name.toLowerCase().endsWith('.json')) {
         const parsed = JSON.parse(text);
-        if (Array.isArray(parsed)) itemsToCreate = parsed;
-        else if (parsed.items && Array.isArray(parsed.items)) itemsToCreate = parsed.items;
+        if (Array.isArray(parsed)) itemsToCreate = parsed as Record<string, unknown>[];
+        else if (parsed.items && Array.isArray(parsed.items)) itemsToCreate = parsed.items as Record<string, unknown>[];
       } else {
         // assume CSV
         itemsToCreate = parseCSV(text);
@@ -285,12 +262,19 @@ export const Dashboard = () => {
       const errors: string[] = [];
       for (const row of itemsToCreate) {
         // Map common fields; CSV headers should match these names: name, category, quantity, daily_usage, expiry_date
-        const payload: any = {
-          name: row.name || row.item || row.product || '',
-          category: row.category || row.cat || 'Uncategorized',
-          quantity: Number(row.quantity ?? row.qty ?? 0) || 0,
-          daily_usage: Number(row.daily_usage ?? row.dailyUsage ?? row.usage ?? 0) || 0,
-          expiry_date: row.expiry_date || row.expiry || row.expiryDate || null,
+        const rowName = typeof row.name === 'string' ? row.name : (typeof row.item === 'string' ? row.item : (typeof row.product === 'string' ? row.product : ''));
+        const rowCategory = typeof row.category === 'string' ? row.category : (typeof row.cat === 'string' ? row.cat : 'Uncategorized');
+        const rowQty = Number(row.quantity ?? row.qty ?? 0) || 0;
+        const rowUsage = Number(row.daily_usage ?? row.dailyUsage ?? row.usage ?? 0) || 0;
+        const rowExpiry = typeof row.expiry_date === 'string' ? row.expiry_date : (typeof row.expiry === 'string' ? row.expiry : (typeof row.expiryDate === 'string' ? row.expiryDate : null));
+
+        const payload: Omit<InventoryItem, 'id' | 'user_id' | 'created_at' | 'updated_at'> = {
+          name: rowName,
+          category: rowCategory,
+          quantity: rowQty,
+          daily_usage: rowUsage,
+          expiry_date: rowExpiry || null,
+          unit: (row.unit as InventoryItem['unit']) || 'pcs',
         };
 
         if (!payload.name) {
@@ -301,20 +285,21 @@ export const Dashboard = () => {
         try {
           await inventoryApi.createItem(payload);
           created += 1;
-        } catch (err: any) {
-          errors.push(`Failed to create ${payload.name}: ${err?.message || err}`);
+        } catch (err) {
+          const error = err instanceof Error ? err : new Error(String(err));
+          errors.push(`Failed to create ${payload.name}: ${error.message}`);
         }
       }
 
       await loadData();
       alert(`Import complete. Created ${created} items.${errors.length ? '\nErrors:\n' + errors.join('\n') : ''}`);
-    } catch (err: any) {
-      console.error('Import failed', err);
-      alert('Import failed: ' + (err?.message || err));
+    } catch (err) {
+      const error = err instanceof Error ? err : new Error(String(err));
+      console.error('Import failed', error);
+      alert('Import failed: ' + error.message);
     } finally {
       // reset input
-      const input = e.target as HTMLInputElement | null;
-      if (input) input.value = '';
+      e.target.value = '';
     }
   };
 
@@ -566,7 +551,7 @@ export const Dashboard = () => {
                       <div className="text-sm text-gray-700">
                         <p><strong>Top predicted restocks:</strong> {
                           Object.entries(predictions?.predictions || {})
-                            .filter(([_, pred]) => pred.low_stock_probability > 0.5)
+                            .filter(([, pred]) => pred.low_stock_probability > 0.5)
                             .map(([id]) => items.find(i => i.id === id)?.name)
                             .filter(Boolean)
                             .slice(0, 3)
@@ -648,26 +633,31 @@ export const Dashboard = () => {
             <div className="bg-white rounded-xl shadow-sm border border-gray-200">
               <div className="p-6 border-b border-gray-200 flex justify-between items-center">
                 <h2 className="text-xl font-semibold text-gray-800">Inventory</h2>
-                <button
-                  onClick={handleAddItem}
-                  className="flex items-center gap-2 bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg transition"
-                >
-                  <Plus className="w-5 h-5" />
-                  Add Item
-                </button>
-                <button
-                  onClick={handleImportClick}
-                  className="ml-2 flex items-center gap-2 bg-white border border-gray-200 px-3 py-2 rounded-lg hover:bg-gray-50"
-                >
-                  Import
-                </button>
-                <input id="hs-import-input" type="file" accept=".csv,application/json,.json" onChange={handleFileChange} className="hidden" />
+                {role !== 'Viewer' && (
+                  <div className="flex gap-2">
+                    <button
+                      onClick={handleAddItem}
+                      className="flex items-center gap-2 bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg transition"
+                    >
+                      <Plus className="w-5 h-5" />
+                      Add Item
+                    </button>
+                    <button
+                      onClick={handleImportClick}
+                      className="ml-2 flex items-center gap-2 bg-white border border-gray-200 px-3 py-2 rounded-lg hover:bg-gray-50"
+                    >
+                      Import
+                    </button>
+                    <input id="hs-import-input" type="file" accept=".csv,application/json,.json" onChange={handleFileChange} className="hidden" />
+                  </div>
+                )}
               </div>
               <InventoryTable
                 items={items}
                 onEdit={handleEditItem}
                 onDelete={handleDeleteItem}
                 onReorder={handleReorder}
+                readOnly={role === 'Viewer'}
               />
             </div>
           )}
@@ -723,41 +713,57 @@ export const Dashboard = () => {
                       <div key={m.id} className="flex items-center justify-between border border-gray-100 rounded-lg p-3">
                         <div>
                           <div className="font-medium text-gray-800">{m.name}</div>
-                          <div className="text-sm text-gray-500">Role: {m.role} • Access: {m.access}</div>
+                          <div className="text-sm text-gray-500">Email: {m.email} • Role: {m.role}</div>
                         </div>
                         <div className="flex items-center gap-2">
                           <select
                             value={m.role}
-                            onChange={(e) => setTeamMembers((s) => s.map((t) => t.id === m.id ? { ...t, role: e.target.value } : t))}
-                            className="px-3 py-1 border rounded"
+                            onChange={async (e) => {
+                              try {
+                                await teamApi.updateTeamMember(m.id, { role: e.target.value });
+                                fetchTeamMembers();
+                              } catch {
+                                alert('Failed to update member role');
+                              }
+                            }}
+                            className="px-3 py-1 border rounded text-sm"
                           >
+                            <option>Admin</option>
                             <option>Manager</option>
                             <option>Staff</option>
                             <option>Viewer</option>
                           </select>
-                          <select
-                            value={m.access}
-                            onChange={(e) => setTeamMembers((s) => s.map((t) => t.id === m.id ? { ...t, access: e.target.value } : t))}
-                            className="px-3 py-1 border rounded"
-                          >
-                            <option value="admin">Admin</option>
-                            <option value="write">Write</option>
-                            <option value="read">Read</option>
-                          </select>
-                          <button
-                            onClick={() => setTeamMembers((s) => s.filter((t) => t.id !== m.id))}
-                            className="text-sm text-red-600 hover:underline"
-                          >
-                            Remove
-                          </button>
+                          {m.id !== user?.id && (
+                            <button
+                              onClick={async () => {
+                                if (confirm(`Remove ${m.name}?`)) {
+                                  try {
+                                    await teamApi.deleteTeamMember(m.id);
+                                    fetchTeamMembers();
+                                  } catch {
+                                    alert('Failed to remove team member');
+                                  }
+                                }
+                              }}
+                              className="text-sm text-red-600 hover:underline px-2 py-1"
+                            >
+                              Remove
+                            </button>
+                          )}
                         </div>
                       </div>
                     ))}
                   </div>
                 </div>
 
-                <AddMemberForm onAdd={(name, role, access) => {
-                  setTeamMembers((s) => [...s, { id: Date.now().toString(), name, role, access }]);
+                <AddMemberForm onAdd={async (name, email, password, role) => {
+                  try {
+                    await teamApi.addTeamMember({ name, email, password, role });
+                    fetchTeamMembers();
+                  } catch (err) {
+                    const error = err instanceof Error ? err : new Error(String(err));
+                    alert(error.message || 'Failed to add member');
+                  }
                 }} />
               </div>
             </div>

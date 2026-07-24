@@ -5,7 +5,7 @@ import User from '../models/User.js';
 import { getJwtSecret } from '../middleware/auth.js';
 
 // In-memory storage fallback for development when MongoDB is unavailable
-const devUsers = new Map();
+export const devUsers = new Map();
 let nextUserId = 1;
 
 function isDbConnected() {
@@ -85,11 +85,11 @@ export const register = async (req, res) => {
       }
 
       const userId = `dev_${nextUserId++}`;
-      const user = { id: userId, email, name, password_hash: passwordHash };
+      const user = { id: userId, email, name, password_hash: passwordHash, role: 'Admin', household_id: userId };
       devUsers.set(email, user);
 
       const token = jwt.sign(
-        { userId, email },
+        { userId, email, role: 'Admin', householdId: userId },
         getJwtSecret(),
         { expiresIn: '7d' }
       );
@@ -98,7 +98,7 @@ export const register = async (req, res) => {
       return res.status(201).json({
         message: 'User registered successfully (dev mode)',
         token,
-        user: { id: userId, email, name },
+        user: { id: userId, email, name, role: 'Admin', householdId: userId },
       });
     }
 
@@ -118,10 +118,9 @@ export const register = async (req, res) => {
         email,
         password_hash: passwordHash,
         name,
+        role: 'Admin', // Default to Admin for main account registration
       });
     } catch (createError) {
-      // Handles the race where two requests both pass the findOne check
-      // above and then hit the unique index on `email` at insert time.
       if (createError.code === 11000) {
         return res.status(400).json({ error: 'Email already registered' });
       }
@@ -130,7 +129,12 @@ export const register = async (req, res) => {
 
     // Generate JWT token
     const token = jwt.sign(
-      { userId: newUser._id.toString(), email: newUser.email },
+      { 
+        userId: newUser._id.toString(), 
+        email: newUser.email, 
+        role: newUser.role || 'Admin', 
+        householdId: (newUser.household_id || newUser._id).toString() 
+      },
       getJwtSecret(),
       { expiresIn: '7d' }
     );
@@ -138,7 +142,13 @@ export const register = async (req, res) => {
     res.status(201).json({
       message: 'User registered successfully',
       token,
-      user: { id: newUser._id.toString(), email: newUser.email, name: newUser.name },
+      user: { 
+        id: newUser._id.toString(), 
+        email: newUser.email, 
+        name: newUser.name, 
+        role: newUser.role || 'Admin', 
+        householdId: (newUser.household_id || newUser._id).toString() 
+      },
     });
   } catch (error) {
     console.error('Register error:', error);
@@ -171,7 +181,7 @@ export const login = async (req, res) => {
       }
 
       const token = jwt.sign(
-        { userId: user.id, email: user.email },
+        { userId: user.id, email: user.email, role: user.role || 'Admin', householdId: user.household_id || user.id },
         getJwtSecret(),
         { expiresIn: '7d' }
       );
@@ -180,7 +190,7 @@ export const login = async (req, res) => {
       return res.json({
         message: 'Login successful (dev mode)',
         token,
-        user: { id: user.id, email: user.email, name: user.name },
+        user: { id: user.id, email: user.email, name: user.name, role: user.role || 'Admin', householdId: user.household_id || user.id },
       });
     }
 
@@ -198,7 +208,12 @@ export const login = async (req, res) => {
     }
 
     const token = jwt.sign(
-      { userId: user._id.toString(), email: user.email },
+      { 
+        userId: user._id.toString(), 
+        email: user.email, 
+        role: user.role || 'Admin', 
+        householdId: (user.household_id || user._id).toString() 
+      },
       getJwtSecret(),
       { expiresIn: '7d' }
     );
@@ -206,7 +221,13 @@ export const login = async (req, res) => {
     res.json({
       message: 'Login successful',
       token,
-      user: { id: user._id.toString(), email: user.email, name: user.name },
+      user: { 
+        id: user._id.toString(), 
+        email: user.email, 
+        name: user.name, 
+        role: user.role || 'Admin', 
+        householdId: (user.household_id || user._id).toString() 
+      },
     });
   } catch (error) {
     console.error('Login error:', error);

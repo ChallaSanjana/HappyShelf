@@ -7,16 +7,16 @@ import {
   getStats,
   getPredictions,
 } from '../controllers/inventoryController.js';
-import { authenticateToken } from '../middleware/auth.js';
+import { authenticateToken, authorizeRoles } from '../middleware/auth.js';
 
 const router = express.Router();
 
 router.use(authenticateToken);
 
 router.get('/items', getItems);
-router.post('/items', createItem);
-router.put('/items/:id', updateItem);
-router.delete('/items/:id', deleteItem);
+router.post('/items', authorizeRoles('Admin', 'Manager', 'Staff'), createItem);
+router.put('/items/:id', authorizeRoles('Admin', 'Manager', 'Staff'), updateItem);
+router.delete('/items/:id', authorizeRoles('Admin', 'Manager', 'Staff'), deleteItem);
 router.get('/stats', getStats);
 router.get('/predictions', getPredictions);
 

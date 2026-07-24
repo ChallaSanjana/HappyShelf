@@ -38,13 +38,13 @@ export const ItemModal = ({ item, onSave, onClose }: ItemModalProps) => {
   const [error, setError] = useState('');
   const [isLoading, setIsLoading] = useState(false);
 
-  const formatDate = (dateStr: any) => {
+  const formatDate = (dateStr: string | null | undefined) => {
     if (!dateStr) return '';
     try {
       const d = new Date(dateStr);
       if (Number.isNaN(d.getTime())) return '';
       return d.toISOString().substring(0, 10);
-    } catch (e) {
+    } catch {
       return '';
     }
   };
@@ -138,7 +138,7 @@ export const ItemModal = ({ item, onSave, onClose }: ItemModalProps) => {
         quantity: quantityVal,
         daily_usage: dailyUsageVal,
         expiry_date: formData.expiry_date || null,
-        unit: formData.unit as any,
+        unit: formData.unit as InventoryItem['unit'],
         purchase_date: formData.purchase_date || null,
         min_stock_level: minStockVal,
         storage_location: formData.storage_location || null,

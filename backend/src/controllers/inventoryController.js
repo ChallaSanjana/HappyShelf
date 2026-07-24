@@ -77,11 +77,11 @@ export const getItems = async (req, res) => {
     if (rejectStaleDevSession(req, res)) return;
 
     if (!isDbConnected()) {
-      const items = getUserItems(req.user.userId);
+      const items = getUserItems(req.user.householdId);
       return res.json({ items: items.slice().sort((a, b) => new Date(b.created_at) - new Date(a.created_at)) });
     }
 
-    const items = await Item.find({ user_id: req.user.userId }).sort({ createdAt: -1 });
+    const items = await Item.find({ user_id: req.user.householdId }).sort({ createdAt: -1 });
     res.json({ items });
   } catch (error) {
     console.error('Get items error:', error);
@@ -151,10 +151,10 @@ export const createItem = async (req, res) => {
     }
 
     if (!isDbConnected()) {
-      const items = getUserItems(req.user.userId);
+      const items = getUserItems(req.user.householdId);
       const newItem = {
         id: `dev_${nextItemId++}`,
-        user_id: req.user.userId,
+        user_id: req.user.householdId,
         name,
         category,
         quantity: numericFields.quantity,
@@ -173,7 +173,7 @@ export const createItem = async (req, res) => {
     }
 
     const newItem = await Item.create({
-      user_id: req.user.userId,
+      user_id: req.user.householdId,
       name,
       category,
       quantity: numericFields.quantity,
@@ -224,11 +224,11 @@ export const updateItem = async (req, res) => {
     let targetQuantity = numericFields.quantity;
     if (targetQuantity === undefined) {
       if (!isDbConnected()) {
-        const items = getUserItems(req.user.userId);
+        const items = getUserItems(req.user.householdId);
         const item = items.find(it => it.id === id);
         if (item) targetQuantity = item.quantity;
       } else {
-        const item = await Item.findOne({ _id: id, user_id: req.user.userId });
+        const item = await Item.findOne({ _id: id, user_id: req.user.householdId });
         if (item) targetQuantity = item.quantity;
       }
     }
@@ -284,10 +284,10 @@ export const updateItem = async (req, res) => {
     if (pDateVal === undefined || eDateVal === undefined) {
       let existingItem = null;
       if (!isDbConnected()) {
-        const items = getUserItems(req.user.userId);
+        const items = getUserItems(req.user.householdId);
         existingItem = items.find(it => it.id === id);
       } else {
-        existingItem = await Item.findOne({ _id: id, user_id: req.user.userId });
+        existingItem = await Item.findOne({ _id: id, user_id: req.user.householdId });
       }
 
       if (existingItem) {
@@ -307,7 +307,7 @@ export const updateItem = async (req, res) => {
     }
 
     if (!isDbConnected()) {
-      const items = getUserItems(req.user.userId);
+      const items = getUserItems(req.user.householdId);
       const item = items.find(it => it.id === id);
       if (!item) {
         return res.status(404).json({ error: 'Item not found' });
@@ -338,7 +338,7 @@ export const updateItem = async (req, res) => {
     if (storage_location !== undefined) updateData.storage_location = storage_location || null;
 
     const updatedItem = await Item.findOneAndUpdate(
-      { _id: id, user_id: req.user.userId },
+      { _id: id, user_id: req.user.householdId },
       updateData,
       { new: true }
     );
@@ -365,7 +365,7 @@ export const deleteItem = async (req, res) => {
     }
 
     if (!isDbConnected()) {
-      const items = getUserItems(req.user.userId);
+      const items = getUserItems(req.user.householdId);
       const index = items.findIndex(it => it.id === id);
       if (index === -1) {
         return res.status(404).json({ error: 'Item not found' });
@@ -376,7 +376,7 @@ export const deleteItem = async (req, res) => {
 
     const deletedItem = await Item.findOneAndDelete({
       _id: id,
-      user_id: req.user.userId,
+      user_id: req.user.householdId,
     });
 
     if (!deletedItem) {
@@ -396,10 +396,10 @@ export const getStats = async (req, res) => {
 
     let items;
     if (!isDbConnected()) {
-      items = getUserItems(req.user.userId);
+      items = getUserItems(req.user.householdId);
     } else {
       // Fetch all items for the user (metrics calculated on-the-fly, not stored in DB)
-      items = await Item.find({ user_id: req.user.userId });
+      items = await Item.find({ user_id: req.user.householdId });
     }
 
     const totalItems = items.length;
@@ -463,16 +463,16 @@ export const getPredictions = async (req, res) => {
 
     let items;
     if (!isDbConnected()) {
-      items = getUserItems(req.user.userId);
+      items = getUserItems(req.user.householdId);
     } else {
-      items = await Item.find({ user_id: req.user.userId });
+      items = await Item.find({ user_id: req.user.householdId });
     }
 
     const formattedItems = items.map((it) => (it.toJSON ? it.toJSON() : it));
 
     // Call Python FastAPI ML Service
     try {
-      const mlResponse = await fetch('http://localhost:8000/predict', {
+      const mlResponse = await fetch('http://127.0.0.1:8000/predict', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

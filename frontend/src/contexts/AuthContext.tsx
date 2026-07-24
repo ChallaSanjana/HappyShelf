@@ -4,6 +4,8 @@ interface User {
   id: string;
   email: string;
   name: string;
+  role: string;
+  householdId: string;
 }
 
 interface AuthContextType {
@@ -39,11 +41,11 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     try {
       const body = await response.json();
       return body.error || body.message || JSON.stringify(body);
-    } catch (e) {
+    } catch {
       try {
         const text = await response.text();
         return text || `HTTP ${response.status}`;
-      } catch (e2) {
+      } catch {
         return `HTTP ${response.status}`;
       }
     }
@@ -66,9 +68,10 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       setUser(data.user);
       localStorage.setItem('token', data.token);
       localStorage.setItem('user', JSON.stringify(data.user));
-    } catch (err: any) {
+    } catch (err) {
       // Normalize thrown error so callers can show a friendly message
-      throw new Error(err?.message || 'Login failed');
+      const message = err instanceof Error ? err.message : 'Login failed';
+      throw new Error(message);
     }
   };
 
@@ -90,8 +93,9 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       setUser(data.user);
       localStorage.setItem('token', data.token);
       localStorage.setItem('user', JSON.stringify(data.user));
-    } catch (err: any) {
-      throw new Error(err?.message || 'Registration failed');
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Registration failed';
+      throw new Error(message);
     }
   };
 
