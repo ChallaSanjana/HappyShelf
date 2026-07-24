@@ -8,6 +8,10 @@ export interface InventoryItem {
   quantity: number;
   daily_usage: number;
   expiry_date: string | null;
+  unit: 'pcs' | 'kg' | 'g' | 'L' | 'ml' | 'packs' | 'bottles' | 'boxes' | 'other';
+  purchase_date?: string | null;
+  min_stock_level?: number | null;
+  storage_location?: string | null;
   created_at: string;
   updated_at: string;
 }

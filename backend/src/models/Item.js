@@ -33,6 +33,25 @@ const itemSchema = new mongoose.Schema(
       type: Date,
       default: null,
     },
+    unit: {
+      type: String,
+      required: true,
+      enum: ['pcs', 'kg', 'g', 'L', 'ml', 'packs', 'bottles', 'boxes', 'other'],
+      default: 'pcs',
+    },
+    purchase_date: {
+      type: Date,
+      default: null,
+    },
+    min_stock_level: {
+      type: Number,
+      default: null,
+    },
+    storage_location: {
+      type: String,
+      default: null,
+      trim: true,
+    },
   },
   {
     timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' },

@@ -93,15 +93,61 @@ export const createItem = async (req, res) => {
   try {
     if (rejectStaleDevSession(req, res)) return;
 
-    const { name, category, quantity, daily_usage, expiry_date } = req.body;
+    const { name, category, quantity, daily_usage, expiry_date, unit, purchase_date, min_stock_level, storage_location } = req.body;
 
-    if (!name || !category || quantity === undefined || daily_usage === undefined) {
+    if (!name || !category || quantity === undefined || daily_usage === undefined || !unit) {
       return res.status(400).json({ error: 'Missing required fields' });
     }
 
     const numericFields = parseNumericFields(quantity, daily_usage);
     if (!numericFields || numericFields.quantity === undefined || numericFields.daily_usage === undefined) {
       return res.status(400).json({ error: 'quantity and daily_usage must be non-negative numbers' });
+    }
+
+    if (numericFields.quantity <= 0) {
+      return res.status(400).json({ error: 'Quantity must be positive' });
+    }
+
+    if (numericFields.daily_usage <= 0) {
+      return res.status(400).json({ error: 'Daily usage must be positive' });
+    }
+
+    const validUnits = ['pcs', 'kg', 'g', 'L', 'ml', 'packs', 'bottles', 'boxes', 'other'];
+    if (!validUnits.includes(unit)) {
+      return res.status(400).json({ error: 'Invalid unit value' });
+    }
+
+    let minStock = null;
+    if (min_stock_level !== undefined && min_stock_level !== null && min_stock_level !== '') {
+      minStock = parseInt(min_stock_level, 10);
+      if (Number.isNaN(minStock) || minStock < 0) {
+        return res.status(400).json({ error: 'Minimum stock level must be a non-negative number' });
+      }
+      if (minStock > numericFields.quantity) {
+        return res.status(400).json({ error: 'Minimum stock level cannot exceed quantity' });
+      }
+    }
+
+    if (purchase_date) {
+      const pDate = new Date(purchase_date);
+      if (Number.isNaN(pDate.getTime())) {
+        return res.status(400).json({ error: 'Invalid purchase date' });
+      }
+      const today = new Date();
+      today.setHours(23, 59, 59, 999);
+      if (pDate > today) {
+        return res.status(400).json({ error: 'Purchase date cannot be in the future' });
+      }
+    }
+
+    if (expiry_date && purchase_date) {
+      const eDate = new Date(expiry_date);
+      const pDate = new Date(purchase_date);
+      if (!Number.isNaN(eDate.getTime()) && !Number.isNaN(pDate.getTime())) {
+        if (eDate <= pDate) {
+          return res.status(400).json({ error: 'Expiry date must be after purchase date' });
+        }
+      }
     }
 
     if (!isDbConnected()) {
@@ -114,6 +160,10 @@ export const createItem = async (req, res) => {
         quantity: numericFields.quantity,
         daily_usage: numericFields.daily_usage,
         expiry_date: expiry_date || null,
+        unit,
+        purchase_date: purchase_date || null,
+        min_stock_level: minStock,
+        storage_location: storage_location || null,
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       };
@@ -129,6 +179,10 @@ export const createItem = async (req, res) => {
       quantity: numericFields.quantity,
       daily_usage: numericFields.daily_usage,
       expiry_date: expiry_date || null,
+      unit,
+      purchase_date: purchase_date || null,
+      min_stock_level: minStock,
+      storage_location: storage_location || null,
     });
 
     res.status(201).json({ message: 'Item created successfully', item: newItem });
@@ -143,7 +197,7 @@ export const updateItem = async (req, res) => {
     if (rejectStaleDevSession(req, res)) return;
 
     const { id } = req.params;
-    const { name, category, quantity, daily_usage, expiry_date } = req.body;
+    const { name, category, quantity, daily_usage, expiry_date, unit, purchase_date, min_stock_level, storage_location } = req.body;
 
     if (isDbConnected() && !isValidObjectId(id)) {
       return res.status(400).json({ error: 'Invalid item id' });
@@ -152,6 +206,104 @@ export const updateItem = async (req, res) => {
     const numericFields = parseNumericFields(quantity, daily_usage);
     if (!numericFields) {
       return res.status(400).json({ error: 'quantity and daily_usage must be non-negative numbers' });
+    }
+
+    if (numericFields.quantity !== undefined && numericFields.quantity <= 0) {
+      return res.status(400).json({ error: 'Quantity must be positive' });
+    }
+
+    if (numericFields.daily_usage !== undefined && numericFields.daily_usage <= 0) {
+      return res.status(400).json({ error: 'Daily usage must be positive' });
+    }
+
+    const validUnits = ['pcs', 'kg', 'g', 'L', 'ml', 'packs', 'bottles', 'boxes', 'other'];
+    if (unit !== undefined && !validUnits.includes(unit)) {
+      return res.status(400).json({ error: 'Invalid unit value' });
+    }
+
+    let targetQuantity = numericFields.quantity;
+    if (targetQuantity === undefined) {
+      if (!isDbConnected()) {
+        const items = getUserItems(req.user.userId);
+        const item = items.find(it => it.id === id);
+        if (item) targetQuantity = item.quantity;
+      } else {
+        const item = await Item.findOne({ _id: id, user_id: req.user.userId });
+        if (item) targetQuantity = item.quantity;
+      }
+    }
+
+    let minStock = undefined;
+    if (min_stock_level !== undefined) {
+      if (min_stock_level === null || min_stock_level === '') {
+        minStock = null;
+      } else {
+        minStock = parseInt(min_stock_level, 10);
+        if (Number.isNaN(minStock) || minStock < 0) {
+          return res.status(400).json({ error: 'Minimum stock level must be a non-negative number' });
+        }
+        if (targetQuantity !== undefined && minStock > targetQuantity) {
+          return res.status(400).json({ error: 'Minimum stock level cannot exceed quantity' });
+        }
+      }
+    }
+
+    let targetPurchaseDate = purchase_date;
+    if (purchase_date !== undefined) {
+      if (purchase_date === null || purchase_date === '') {
+        targetPurchaseDate = null;
+      } else {
+        const pDate = new Date(purchase_date);
+        if (Number.isNaN(pDate.getTime())) {
+          return res.status(400).json({ error: 'Invalid purchase date' });
+        }
+        const today = new Date();
+        today.setHours(23, 59, 59, 999);
+        if (pDate > today) {
+          return res.status(400).json({ error: 'Purchase date cannot be in the future' });
+        }
+        targetPurchaseDate = pDate;
+      }
+    }
+
+    let targetExpiryDate = expiry_date;
+    if (expiry_date !== undefined) {
+      if (expiry_date === null || expiry_date === '') {
+        targetExpiryDate = null;
+      } else {
+        const eDate = new Date(expiry_date);
+        if (Number.isNaN(eDate.getTime())) {
+          return res.status(400).json({ error: 'Invalid expiry date' });
+        }
+        targetExpiryDate = eDate;
+      }
+    }
+
+    let pDateVal = targetPurchaseDate;
+    let eDateVal = targetExpiryDate;
+    if (pDateVal === undefined || eDateVal === undefined) {
+      let existingItem = null;
+      if (!isDbConnected()) {
+        const items = getUserItems(req.user.userId);
+        existingItem = items.find(it => it.id === id);
+      } else {
+        existingItem = await Item.findOne({ _id: id, user_id: req.user.userId });
+      }
+
+      if (existingItem) {
+        if (pDateVal === undefined) pDateVal = existingItem.purchase_date;
+        if (eDateVal === undefined) eDateVal = existingItem.expiry_date;
+      }
+    }
+
+    if (pDateVal && eDateVal) {
+      const pD = new Date(pDateVal);
+      const eD = new Date(eDateVal);
+      if (!Number.isNaN(pD.getTime()) && !Number.isNaN(eD.getTime())) {
+        if (eD <= pD) {
+          return res.status(400).json({ error: 'Expiry date must be after purchase date' });
+        }
+      }
     }
 
     if (!isDbConnected()) {
@@ -165,6 +317,10 @@ export const updateItem = async (req, res) => {
       if (numericFields.quantity !== undefined) item.quantity = numericFields.quantity;
       if (numericFields.daily_usage !== undefined) item.daily_usage = numericFields.daily_usage;
       if (expiry_date !== undefined) item.expiry_date = expiry_date || null;
+      if (unit !== undefined) item.unit = unit;
+      if (purchase_date !== undefined) item.purchase_date = purchase_date || null;
+      if (min_stock_level !== undefined) item.min_stock_level = minStock;
+      if (storage_location !== undefined) item.storage_location = storage_location || null;
       item.updated_at = new Date().toISOString();
       return res.json({ message: 'Item updated successfully (dev mode)', item });
     }
@@ -176,6 +332,10 @@ export const updateItem = async (req, res) => {
     if (numericFields.quantity !== undefined) updateData.quantity = numericFields.quantity;
     if (numericFields.daily_usage !== undefined) updateData.daily_usage = numericFields.daily_usage;
     if (expiry_date !== undefined) updateData.expiry_date = expiry_date || null;
+    if (unit !== undefined) updateData.unit = unit;
+    if (purchase_date !== undefined) updateData.purchase_date = purchase_date || null;
+    if (min_stock_level !== undefined) updateData.min_stock_level = minStock;
+    if (storage_location !== undefined) updateData.storage_location = storage_location || null;
 
     const updatedItem = await Item.findOneAndUpdate(
       { _id: id, user_id: req.user.userId },
