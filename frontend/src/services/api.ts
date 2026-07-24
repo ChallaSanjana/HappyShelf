@@ -80,4 +80,30 @@ export const inventoryApi = {
     if (!response.ok) throw new Error('Failed to fetch stats');
     return response.json();
   },
+
+  getPredictions: async (): Promise<PredictionsResponse> => {
+    const response = await fetch(`${API_URL}/inventory/predictions`, {
+      headers: getAuthHeaders(),
+    });
+    if (!response.ok) throw new Error('Failed to fetch predictions');
+    return response.json();
+  },
 };
+
+export interface ItemPrediction {
+  demand_forecast: number[];
+  refill_date: string;
+  expiry_risk: 'High' | 'Medium' | 'Low';
+  low_stock_probability: number;
+}
+
+export interface ModelMetadata {
+  model_confidence: number;
+  next_peak_demand_date: string;
+}
+
+export interface PredictionsResponse {
+  predictions: Record<string, ItemPrediction>;
+  model_metadata: ModelMetadata;
+  is_ml?: boolean;
+}

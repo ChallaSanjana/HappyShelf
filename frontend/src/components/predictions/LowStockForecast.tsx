@@ -1,10 +1,10 @@
 import React from 'react';
-import { InventoryItem, Stats } from '../../services/api';
+import { InventoryItem, Stats, PredictionsResponse } from '../../services/api';
 import { SimpleBarChart } from '../charts/SimpleChart';
 
-type Props = { items: InventoryItem[]; stats: Stats | null };
+type Props = { items: InventoryItem[]; stats: Stats | null; predictions: PredictionsResponse | null };
 
-const LowStockForecast: React.FC<Props> = ({ items }) => {
+const LowStockForecast: React.FC<Props> = ({ items, predictions }) => {
   if (!items || items.length === 0) {
     return (
       <div>
@@ -18,12 +18,42 @@ const LowStockForecast: React.FC<Props> = ({ items }) => {
 
   const sample = items.slice(0, 6);
   const labels = sample.map((s) => s.name);
-  const data = sample.map((s) => Math.max(0, Math.round((s.quantity || 0) - (s.daily_usage || 0) * 7)));
+  const data = sample.map((s) => {
+    if (predictions?.predictions) {
+      const itemPred = predictions.predictions[s.id];
+      if (itemPred && itemPred.low_stock_probability !== undefined) {
+        return Math.round(itemPred.low_stock_probability * 100);
+      }
+    }
+    const daysLeft = s.daily_usage > 0 ? (s.quantity || 0) / s.daily_usage : 999;
+    if (daysLeft < 3) return 95;
+    if (daysLeft < 7) return 75;
+    if (daysLeft < 10) return 45;
+    return 5;
+  });
+
+  const renderModelBadge = (isMl?: boolean) => {
+    if (isMl) {
+      return (
+        <span className="text-[10px] uppercase tracking-wider font-semibold bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded ml-2">
+          Live ML Model
+        </span>
+      );
+    }
+    return (
+      <span className="text-[10px] uppercase tracking-wider font-semibold bg-gray-100 text-gray-600 px-2 py-0.5 rounded ml-2">
+        Heuristic Fallback
+      </span>
+    );
+  };
 
   return (
     <div>
-      <h4 className="text-md font-medium mb-3">Low Stock Forecast (7 days)</h4>
-      <SimpleBarChart labels={labels} datasets={[{ label: 'Expected Remaining', data, backgroundColor: '#f97316' }]} height={160} />
+      <h4 className="text-md font-medium mb-3 flex items-center justify-between">
+        <span>Low Stock Probability (7 days)</span>
+        {renderModelBadge(predictions?.is_ml)}
+      </h4>
+      <SimpleBarChart labels={labels} datasets={[{ label: 'Stock Out Probability (%)', data, backgroundColor: '#f97316' }]} height={160} />
     </div>
   );
 };

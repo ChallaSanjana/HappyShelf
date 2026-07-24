@@ -5,6 +5,7 @@ import {
   updateItem,
   deleteItem,
   getStats,
+  getPredictions,
 } from '../controllers/inventoryController.js';
 import { authenticateToken } from '../middleware/auth.js';
 
@@ -17,5 +18,6 @@ router.post('/items', createItem);
 router.put('/items/:id', updateItem);
 router.delete('/items/:id', deleteItem);
 router.get('/stats', getStats);
+router.get('/predictions', getPredictions);
 
 export default router;

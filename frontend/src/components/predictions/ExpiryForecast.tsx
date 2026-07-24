@@ -1,35 +1,55 @@
 import React from 'react';
-import { InventoryItem, Stats } from '../../services/api';
+import { InventoryItem, Stats, PredictionsResponse } from '../../services/api';
 import { SimpleBarChart } from '../charts/SimpleChart';
 import { getDaysToExpiry } from '../../utils/expiry';
 
-type Props = { items: InventoryItem[]; stats: Stats | null };
+type Props = { items: InventoryItem[]; stats: Stats | null; predictions: PredictionsResponse | null };
 
-const ExpiryForecast: React.FC<Props> = ({ items }) => {
-  const buckets = ['Expired', '0-3d', '4-7d', '8-14d', '15+d'];
-  const counts = [0, 0, 0, 0, 0];
+const ExpiryForecast: React.FC<Props> = ({ items, predictions }) => {
+  const buckets = ['High Risk', 'Medium Risk', 'Low Risk'];
+  const counts = [0, 0, 0];
 
   items.forEach((it) => {
-    const days = getDaysToExpiry(it.expiry_date);
-    // No expiry_date set means the item doesn't expire — it isn't "15+
-    // days from expiring", it's not part of this chart at all. Counting
-    // it in the 15+d bucket (the old behavior) inflated that bucket and
-    // mislabeled non-perishables as "far from expiring soon". This now
-    // matches ExpiryAnalysis.tsx, which uses the same buckets and already
-    // excludes items with no expiry date.
-    if (days === null) return;
+    if (!it.expiry_date) return;
 
-    if (days < 0) counts[0] += 1;
-    else if (days <= 3) counts[1] += 1;
-    else if (days <= 7) counts[2] += 1;
-    else if (days <= 14) counts[3] += 1;
-    else counts[4] += 1;
+    if (predictions?.predictions) {
+      const itemPred = predictions.predictions[it.id];
+      if (itemPred) {
+        if (itemPred.expiry_risk === 'High') counts[0] += 1;
+        else if (itemPred.expiry_risk === 'Medium') counts[1] += 1;
+        else counts[2] += 1;
+      }
+    } else {
+      const days = getDaysToExpiry(it.expiry_date);
+      if (days === null) return;
+      if (days < 3) counts[0] += 1;
+      else if (days < 10) counts[1] += 1;
+      else counts[2] += 1;
+    }
   });
+
+  const renderModelBadge = (isMl?: boolean) => {
+    if (isMl) {
+      return (
+        <span className="text-[10px] uppercase tracking-wider font-semibold bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded ml-2">
+          Live ML Model
+        </span>
+      );
+    }
+    return (
+      <span className="text-[10px] uppercase tracking-wider font-semibold bg-gray-100 text-gray-600 px-2 py-0.5 rounded ml-2">
+        Heuristic Fallback
+      </span>
+    );
+  };
 
   return (
     <div>
-      <h4 className="text-md font-medium mb-3">Expiry Forecast</h4>
-      <SimpleBarChart labels={buckets} datasets={[{ label: 'Expiring Items', data: counts, backgroundColor: '#ef4444' }]} height={140} />
+      <h4 className="text-md font-medium mb-3 flex items-center justify-between">
+        <span>ML Expiry Risk Forecast</span>
+        {renderModelBadge(predictions?.is_ml)}
+      </h4>
+      <SimpleBarChart labels={buckets} datasets={[{ label: 'Risk Count', data: counts, backgroundColor: '#ef4444' }]} height={140} />
     </div>
   );
 };

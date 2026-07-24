@@ -456,3 +456,106 @@ export const getStats = async (req, res) => {
     res.status(500).json({ error: 'Failed to fetch statistics' });
   }
 };
+
+export const getPredictions = async (req, res) => {
+  try {
+    if (rejectStaleDevSession(req, res)) return;
+
+    let items;
+    if (!isDbConnected()) {
+      items = getUserItems(req.user.userId);
+    } else {
+      items = await Item.find({ user_id: req.user.userId });
+    }
+
+    const formattedItems = items.map((it) => (it.toJSON ? it.toJSON() : it));
+
+    // Call Python FastAPI ML Service
+    try {
+      const mlResponse = await fetch('http://localhost:8000/predict', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ items: formattedItems }),
+      });
+
+      if (mlResponse.ok) {
+        const mlData = await mlResponse.json();
+        mlData.is_ml = true;
+        return res.json(mlData);
+      } else {
+        console.warn('ML Service returned error status:', mlResponse.status);
+      }
+    } catch (err) {
+      console.warn('ML Service is offline or unreachable. Using fallback predictions. Error:', err.message);
+    }
+
+    // Fallback Predictions logic (if ML service is unreachable)
+    const predictions = {};
+    let totalScore = 0;
+    
+    items.forEach((item) => {
+      // 1. Demand Forecast fallback
+      const baseDaily = item.daily_usage || 0;
+      const demand_forecast = Array.from({ length: 7 }, (_, i) => 
+        Math.max(0.1, Math.round(baseDaily * (1 + Math.sin(i) * 0.15) * 100) / 100)
+      );
+
+      // 2. Expiry Risk fallback
+      let expiry_risk = 'Low';
+      if (item.expiry_date) {
+        const expDate = new Date(item.expiry_date);
+        const today = new Date();
+        const daysToExpiry = Math.ceil((expDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+        if (daysToExpiry < 3) expiry_risk = 'High';
+        else if (daysToExpiry < 10) expiry_risk = 'Medium';
+      }
+
+      // 3. Low-Stock Probability fallback
+      const daysLeft = item.daily_usage > 0 ? item.quantity / item.daily_usage : 999;
+      let low_stock_probability = 0.05;
+      if (daysLeft < 3) low_stock_probability = 0.95;
+      else if (daysLeft < 7) low_stock_probability = 0.75;
+      else if (daysLeft < 10) low_stock_probability = 0.45;
+
+      // 4. Refill Date fallback
+      let refill_date = 'N/A';
+      if (item.daily_usage > 0) {
+        const daysToEmpty = item.quantity / item.daily_usage;
+        const target = new Date();
+        target.setDate(target.getDate() + Math.ceil(daysToEmpty));
+        refill_date = target.toISOString().split('T')[0];
+      }
+
+      predictions[item.id || item._id.toString()] = {
+        demand_forecast,
+        refill_date,
+        expiry_risk,
+        low_stock_probability,
+      };
+
+      let score = 1.0;
+      if (!item.expiry_date) score -= 0.3;
+      if ((item.daily_usage || 0) <= 0) score -= 0.5;
+      totalScore += score;
+    });
+
+    const model_confidence = items.length > 0 ? Math.round(65 + (totalScore / items.length) * 31) : 65;
+    const target = new Date();
+    target.setDate(target.getDate() + 5);
+    const next_peak_demand_date = target.toISOString().split('T')[0];
+
+    res.json({
+      predictions,
+      model_metadata: {
+        model_confidence,
+        next_peak_demand_date,
+      },
+      is_ml: false,
+    });
+  } catch (error) {
+    console.error('Get predictions error:', error);
+    res.status(500).json({ error: 'Failed to fetch predictions' });
+  }
+};

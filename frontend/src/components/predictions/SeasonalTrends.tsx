@@ -1,8 +1,8 @@
 import React from 'react';
-import { InventoryItem, Stats } from '../../services/api';
+import { InventoryItem, Stats, PredictionsResponse } from '../../services/api';
 import { SimpleLineChart } from '../charts/SimpleChart';
 
-type Props = { items: InventoryItem[]; stats: Stats | null };
+type Props = { items: InventoryItem[]; stats: Stats | null; predictions?: PredictionsResponse | null };
 
 const SeasonalTrends: React.FC<Props> = ({ items }) => {
   if (!items || items.length === 0) {
