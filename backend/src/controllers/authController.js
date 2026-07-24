@@ -12,12 +12,61 @@ function isDbConnected() {
   return mongoose.connection.readyState === 1;
 }
 
+// Mongoose only applies schema setters (lowercase/trim) when a document is
+// saved — NOT when it's used as a query filter. Without normalizing here,
+// "Jane@Example.com" would be stored as "jane@example.com" but a later
+// findOne({ email: 'Jane@Example.com' }) would fail to match it, causing
+// valid users to get "Invalid email or password" on login. Normalizing here
+// also keeps dev-mode (Map-keyed) and DB-mode behavior consistent.
+function normalizeEmail(email) {
+  return typeof email === 'string' ? email.trim().toLowerCase() : email;
+}
+
+// req.body comes straight from express.json(), so `email`/`password` can be
+// any JSON type an attacker chooses to send — not just a string. If an
+// object like { "$gt": "" } or { "$ne": null } reaches a Mongoose query
+// filter unchecked, Mongo query operators are NOT stringified away; they're
+// passed straight through to the database. That turns User.findOne({ email })
+// into a NoSQL injection vector (arbitrary-match / enumeration / always-true
+// existence checks), even though bcrypt.compare would still block a full
+// auth bypass on login. Rejecting non-string input here closes that off
+// before it ever reaches a query.
+function isValidCredentialInput(email, password, name) {
+  if (typeof email !== 'string' || typeof password !== 'string') return false;
+  if (name !== undefined && typeof name !== 'string') return false;
+  return true;
+}
+
+// Applied only at registration — login must still accept whatever password
+// length a user's existing account was created with, so this can't run
+// there without locking out real users on old, shorter passwords.
+const MIN_PASSWORD_LENGTH = 8;
+
+function isStrongEnoughPassword(password) {
+  if (password.length < MIN_PASSWORD_LENGTH) return false;
+  const hasLetter = /[A-Za-z]/.test(password);
+  const hasNumber = /[0-9]/.test(password);
+  return hasLetter && hasNumber;
+}
+
+
 export const register = async (req, res) => {
   try {
-    const { email, password, name } = req.body;
+    const { password, name } = req.body;
+    const email = normalizeEmail(req.body.email);
 
     if (!email || !password || !name) {
       return res.status(400).json({ error: 'All fields are required' });
+    }
+
+    if (!isValidCredentialInput(email, password, name)) {
+      return res.status(400).json({ error: 'Invalid input' });
+    }
+
+    if (!isStrongEnoughPassword(password)) {
+      return res.status(400).json({
+        error: `Password must be at least ${MIN_PASSWORD_LENGTH} characters and include a letter and a number`,
+      });
     }
 
     if (!isDbConnected()) {
@@ -27,6 +76,14 @@ export const register = async (req, res) => {
       }
 
       const passwordHash = await bcrypt.hash(password, 10);
+
+      // Re-check after the (async) hash completes — two concurrent
+      // registrations for the same email could otherwise both pass the
+      // check above and the second write would silently clobber the first.
+      if (devUsers.has(email)) {
+        return res.status(400).json({ error: 'Email already registered' });
+      }
+
       const userId = `dev_${nextUserId++}`;
       const user = { id: userId, email, name, password_hash: passwordHash };
       devUsers.set(email, user);
@@ -55,11 +112,21 @@ export const register = async (req, res) => {
     const passwordHash = await bcrypt.hash(password, 10);
 
     // Create new user
-    const newUser = await User.create({
-      email,
-      password_hash: passwordHash,
-      name,
-    });
+    let newUser;
+    try {
+      newUser = await User.create({
+        email,
+        password_hash: passwordHash,
+        name,
+      });
+    } catch (createError) {
+      // Handles the race where two requests both pass the findOne check
+      // above and then hit the unique index on `email` at insert time.
+      if (createError.code === 11000) {
+        return res.status(400).json({ error: 'Email already registered' });
+      }
+      throw createError;
+    }
 
     // Generate JWT token
     const token = jwt.sign(
@@ -81,10 +148,15 @@ export const register = async (req, res) => {
 
 export const login = async (req, res) => {
   try {
-    const { email, password } = req.body;
+    const { password } = req.body;
+    const email = normalizeEmail(req.body.email);
 
     if (!email || !password) {
       return res.status(400).json({ error: 'Email and password are required' });
+    }
+
+    if (!isValidCredentialInput(email, password)) {
+      return res.status(400).json({ error: 'Invalid input' });
     }
 
     if (!isDbConnected()) {

@@ -20,8 +20,62 @@ function isDbConnected() {
   return mongoose.connection.readyState === 1;
 }
 
+// A user who registered/logged in while the DB was down gets a token with a
+// synthetic id like "dev_1", which is not a valid Mongo ObjectId. If the DB
+// comes back up during that token's 7-day lifetime, any query built from
+// req.user.userId would throw a Mongoose CastError (surfacing as an opaque
+// 500). Catch that case up front and return a clear, actionable error
+// instead, telling the user to log in again now that the DB is available.
+function isDevModeUserId(userId) {
+  return typeof userId === 'string' && userId.startsWith('dev_');
+}
+
+// req.params.id is a raw URL segment — if it isn't a valid 24-char hex
+// ObjectId, Mongoose throws a CastError when it's used in a query filter.
+// That was previously falling through to the generic catch block and coming
+// back as a 500, when it's really a client input error (400).
+function isValidObjectId(id) {
+  return mongoose.Types.ObjectId.isValid(id);
+}
+
+
+function rejectStaleDevSession(req, res) {
+  if (isDbConnected() && isDevModeUserId(req.user.userId)) {
+    res.status(409).json({
+      error: 'Your session was created while offline. Please log in again.',
+    });
+    return true;
+  }
+  return false;
+}
+
+// Validates and coerces quantity/daily_usage. parseInt/parseFloat return NaN
+// for non-numeric input, and NaN silently passes both `=== undefined` checks
+// and Mongoose's `min: 0` validator (NaN < 0 is false), so bad input could
+// otherwise reach storage untouched. Returns { quantity, daily_usage } on
+// success, or null if either provided value isn't a finite number.
+function parseNumericFields(quantity, daily_usage) {
+  const result = {};
+
+  if (quantity !== undefined) {
+    const parsedQuantity = parseInt(quantity, 10);
+    if (!Number.isFinite(parsedQuantity) || parsedQuantity < 0) return null;
+    result.quantity = parsedQuantity;
+  }
+
+  if (daily_usage !== undefined) {
+    const parsedDailyUsage = parseFloat(daily_usage);
+    if (!Number.isFinite(parsedDailyUsage) || parsedDailyUsage < 0) return null;
+    result.daily_usage = parsedDailyUsage;
+  }
+
+  return result;
+}
+
 export const getItems = async (req, res) => {
   try {
+    if (rejectStaleDevSession(req, res)) return;
+
     if (!isDbConnected()) {
       const items = getUserItems(req.user.userId);
       return res.json({ items: items.slice().sort((a, b) => new Date(b.created_at) - new Date(a.created_at)) });
@@ -37,10 +91,17 @@ export const getItems = async (req, res) => {
 
 export const createItem = async (req, res) => {
   try {
+    if (rejectStaleDevSession(req, res)) return;
+
     const { name, category, quantity, daily_usage, expiry_date } = req.body;
 
     if (!name || !category || quantity === undefined || daily_usage === undefined) {
       return res.status(400).json({ error: 'Missing required fields' });
+    }
+
+    const numericFields = parseNumericFields(quantity, daily_usage);
+    if (!numericFields || numericFields.quantity === undefined || numericFields.daily_usage === undefined) {
+      return res.status(400).json({ error: 'quantity and daily_usage must be non-negative numbers' });
     }
 
     if (!isDbConnected()) {
@@ -50,8 +111,8 @@ export const createItem = async (req, res) => {
         user_id: req.user.userId,
         name,
         category,
-        quantity: parseInt(quantity),
-        daily_usage: parseFloat(daily_usage),
+        quantity: numericFields.quantity,
+        daily_usage: numericFields.daily_usage,
         expiry_date: expiry_date || null,
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
@@ -65,8 +126,8 @@ export const createItem = async (req, res) => {
       user_id: req.user.userId,
       name,
       category,
-      quantity: parseInt(quantity),
-      daily_usage: parseFloat(daily_usage),
+      quantity: numericFields.quantity,
+      daily_usage: numericFields.daily_usage,
       expiry_date: expiry_date || null,
     });
 
@@ -79,8 +140,19 @@ export const createItem = async (req, res) => {
 
 export const updateItem = async (req, res) => {
   try {
+    if (rejectStaleDevSession(req, res)) return;
+
     const { id } = req.params;
     const { name, category, quantity, daily_usage, expiry_date } = req.body;
+
+    if (isDbConnected() && !isValidObjectId(id)) {
+      return res.status(400).json({ error: 'Invalid item id' });
+    }
+
+    const numericFields = parseNumericFields(quantity, daily_usage);
+    if (!numericFields) {
+      return res.status(400).json({ error: 'quantity and daily_usage must be non-negative numbers' });
+    }
 
     if (!isDbConnected()) {
       const items = getUserItems(req.user.userId);
@@ -90,8 +162,8 @@ export const updateItem = async (req, res) => {
       }
       if (name !== undefined) item.name = name;
       if (category !== undefined) item.category = category;
-      if (quantity !== undefined) item.quantity = parseInt(quantity);
-      if (daily_usage !== undefined) item.daily_usage = parseFloat(daily_usage);
+      if (numericFields.quantity !== undefined) item.quantity = numericFields.quantity;
+      if (numericFields.daily_usage !== undefined) item.daily_usage = numericFields.daily_usage;
       if (expiry_date !== undefined) item.expiry_date = expiry_date || null;
       item.updated_at = new Date().toISOString();
       return res.json({ message: 'Item updated successfully (dev mode)', item });
@@ -101,8 +173,8 @@ export const updateItem = async (req, res) => {
 
     if (name !== undefined) updateData.name = name;
     if (category !== undefined) updateData.category = category;
-    if (quantity !== undefined) updateData.quantity = parseInt(quantity);
-    if (daily_usage !== undefined) updateData.daily_usage = parseFloat(daily_usage);
+    if (numericFields.quantity !== undefined) updateData.quantity = numericFields.quantity;
+    if (numericFields.daily_usage !== undefined) updateData.daily_usage = numericFields.daily_usage;
     if (expiry_date !== undefined) updateData.expiry_date = expiry_date || null;
 
     const updatedItem = await Item.findOneAndUpdate(
@@ -124,7 +196,13 @@ export const updateItem = async (req, res) => {
 
 export const deleteItem = async (req, res) => {
   try {
+    if (rejectStaleDevSession(req, res)) return;
+
     const { id } = req.params;
+
+    if (isDbConnected() && !isValidObjectId(id)) {
+      return res.status(400).json({ error: 'Invalid item id' });
+    }
 
     if (!isDbConnected()) {
       const items = getUserItems(req.user.userId);
@@ -154,6 +232,8 @@ export const deleteItem = async (req, res) => {
 
 export const getStats = async (req, res) => {
   try {
+    if (rejectStaleDevSession(req, res)) return;
+
     let items;
     if (!isDbConnected()) {
       items = getUserItems(req.user.userId);

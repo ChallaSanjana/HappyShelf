@@ -12,6 +12,13 @@ const userSchema = new mongoose.Schema(
     password_hash: {
       type: String,
       required: true,
+      // Without `select: false`, User.findOne({ email }) returns the hash by
+      // default and authController's `.select('+password_hash')` calls are
+      // no-ops. toJSON() strips it before responses go out, but that only
+      // protects document methods — a future `.lean()` query would bypass
+      // toJSON entirely and could leak the hash. Excluding it here means it
+      // has to be explicitly opted into, which is the safer default.
+      select: false,
     },
     name: {
       type: String,
