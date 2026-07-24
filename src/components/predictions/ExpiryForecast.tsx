@@ -11,14 +11,14 @@ const ExpiryForecast: React.FC<Props> = ({ items }) => {
 
   items.forEach((it) => {
     const days = getDaysToExpiry(it.expiry_date);
-    if (days === null) {
-      counts[4] += 1;
-      return;
-    }
-    // The previous version only checked an upper bound after the first
-    // bucket (`else if (days <= 7)` with no lower bound), so an
-    // already-expired item (e.g. days = -10) fell into the "4-7d" bucket
-    // instead of being flagged as expired.
+    // No expiry_date set means the item doesn't expire — it isn't "15+
+    // days from expiring", it's not part of this chart at all. Counting
+    // it in the 15+d bucket (the old behavior) inflated that bucket and
+    // mislabeled non-perishables as "far from expiring soon". This now
+    // matches ExpiryAnalysis.tsx, which uses the same buckets and already
+    // excludes items with no expiry date.
+    if (days === null) return;
+
     if (days < 0) counts[0] += 1;
     else if (days <= 3) counts[1] += 1;
     else if (days <= 7) counts[2] += 1;

@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { inventoryApi, InventoryItem, Stats } from '../services/api';
 import { calculateMetrics } from '../utils/metricsCalculator';
@@ -18,7 +18,7 @@ import StockLevelsChart from './stats/StockLevelsChart';
 import CategoryInsights from './stats/CategoryInsights';
 import ExpiryAnalysis from './stats/ExpiryAnalysis';
 import CostAnalytics from './stats/CostAnalytics';
-import { LogOut, Plus, Package, AlertTriangle, Leaf, Download, RefreshCw } from 'lucide-react';
+import { LogOut, Plus, Package, AlertTriangle, Leaf, Download, RefreshCw, Menu } from 'lucide-react';
 // sustainability
 import FoodWasteTracker from './sustainability/FoodWasteTracker';
 import CO2Impact from './sustainability/CO2Impact';
@@ -51,7 +51,27 @@ export const Dashboard = () => {
     weeklySummary: false,
   });
 
-  // Persist team members and settings per-user so records are not lost across sign-out/sign-in
+  // Persist team members and settings per-user so records are not lost across sign-out/sign-in.
+  //
+  // Ordering pitfall this guards against: on mount/user-switch, React runs
+  // effects in declaration order within the same commit. The "load" effect
+  // below calls setTeamMembers/setSettingsState, but that update isn't
+  // visible to the "save" effects until the *next* render — so on their
+  // very first run for a given user, the save effects would still see the
+  // pre-load default state (the hardcoded Alice/Ben sample data) and write
+  // that over whatever the user had actually saved. It self-corrects a
+  // render later, but there's a real window where localStorage holds the
+  // wrong data. skipSaveRef marks each save effect's first run (per user)
+  // to be skipped entirely, so nothing is written until the load effect's
+  // state update has actually landed.
+  const skipSaveRef = useRef<{ team: boolean; settings: boolean }>({ team: true, settings: true });
+
+  useEffect(() => {
+    // New user session — the next save for each key should wait for the
+    // load effect below to populate real state first.
+    skipSaveRef.current = { team: true, settings: true };
+  }, [user]);
+
   useEffect(() => {
     if (!user) return;
     const tmKey = `hs:user:${user.id}:teamMembers`;
@@ -79,6 +99,10 @@ export const Dashboard = () => {
 
   useEffect(() => {
     if (!user) return;
+    if (skipSaveRef.current.team) {
+      skipSaveRef.current.team = false;
+      return;
+    }
     const tmKey = `hs:user:${user.id}:teamMembers`;
     try {
       localStorage.setItem(tmKey, JSON.stringify(teamMembers));
@@ -89,6 +113,10 @@ export const Dashboard = () => {
 
   useEffect(() => {
     if (!user) return;
+    if (skipSaveRef.current.settings) {
+      skipSaveRef.current.settings = false;
+      return;
+    }
     const stKey = `hs:user:${user.id}:settings`;
     try {
       localStorage.setItem(stKey, JSON.stringify(settingsState));
@@ -98,6 +126,12 @@ export const Dashboard = () => {
   }, [settingsState, user]);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [lastUpdated, setLastUpdated] = useState<string | null>(null);
+  // Sidebar.tsx already implements the slide-in/overlay behavior for mobile
+  // (translate-x-0 vs -translate-x-full based on `mobileOpen`), but nothing
+  // previously set it to true — there was no way to open the nav on a
+  // viewport where it's hidden by default. This state + the header button
+  // below wire that up.
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
 
   useEffect(() => {
     loadData();
@@ -302,13 +336,24 @@ export const Dashboard = () => {
   }
   return (
     <div className="min-h-screen bg-gray-50 flex">
-      <Sidebar mobileOpen={false} onClose={() => { }} onNavigate={(k) => setView(k)} />
+      <Sidebar
+        mobileOpen={mobileSidebarOpen}
+        onClose={() => setMobileSidebarOpen(false)}
+        onNavigate={(k) => { setView(k); setMobileSidebarOpen(false); }}
+      />
 
       <div className="flex-1 flex flex-col">
         <nav className="bg-white border-b border-gray-200 sticky top-0 z-30">
           <div className="px-4 sm:px-6 lg:px-8">
             <div className="flex justify-between items-center h-16">
               <div className="flex items-center gap-3">
+                <button
+                  onClick={() => setMobileSidebarOpen(true)}
+                  className="md:hidden p-2 -ml-2 text-gray-600 hover:text-gray-800 hover:bg-gray-100 rounded-lg transition"
+                  aria-label="Open navigation menu"
+                >
+                  <Menu className="w-6 h-6" />
+                </button>
                 <div className="bg-green-100 p-2 rounded-lg">
                   <Leaf className="w-6 h-6 text-green-600" />
                 </div>

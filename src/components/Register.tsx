@@ -14,11 +14,24 @@ export const Register = ({ onToggle }: RegisterProps) => {
   const [isLoading, setIsLoading] = useState(false);
   const { register } = useAuth();
 
+  // Mirrors the backend rule in authController.js (MIN_PASSWORD_LENGTH = 8,
+  // must include a letter and a number). The input's `minLength={6}` used
+  // to let a weaker password pass client-side validation and only fail
+  // after a round trip to the server with a generic-looking 400 — this
+  // catches it immediately with a message that says what's actually wrong.
+  const isStrongEnoughPassword = (value: string) =>
+    value.length >= 8 && /[A-Za-z]/.test(value) && /[0-9]/.test(value);
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
-    setIsLoading(true);
 
+    if (!isStrongEnoughPassword(password)) {
+      setError('Password must be at least 8 characters and include a letter and a number');
+      return;
+    }
+
+    setIsLoading(true);
     try {
       await register(email, password, name);
     } catch (err) {
@@ -79,8 +92,9 @@ export const Register = ({ onToggle }: RegisterProps) => {
               className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent outline-none transition"
               placeholder="••••••••"
               required
-              minLength={6}
+              minLength={8}
             />
+            <p className="mt-1 text-xs text-gray-500">At least 8 characters, with a letter and a number.</p>
           </div>
 
           <button
