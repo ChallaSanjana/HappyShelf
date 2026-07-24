@@ -1,4 +1,5 @@
 import { InventoryItem } from '../services/api';
+import { isExpired, isExpiredOrExpiringSoon } from './expiry';
 
 export interface CalculatedMetrics {
   totalItems: number;
@@ -27,42 +28,29 @@ export const calculateMetrics = (items: InventoryItem[]): CalculatedMetrics => {
 
   const totalItems = items.length;
 
-  // Count low stock items (less than 3 days of supply left)
   const lowStockItems = items.filter((item) => {
     const daysLeft = item.daily_usage > 0 ? item.quantity / item.daily_usage : 999;
     return daysLeft < 3;
   }).length;
 
-  // Count items expiring soon (within 7 days)
-  const expiringSoon = items.filter((item) => {
-    if (!item.expiry_date) return false;
-    const daysToExpiry = Math.ceil(
-      (new Date(item.expiry_date).getTime() - new Date().getTime()) / (1000 * 60 * 60 * 24)
-    );
-    return daysToExpiry >= 0 && daysToExpiry < 7;
-  }).length;
+  // Count items expiring soon (within 7 days) OR already expired.
+  // Previously this only matched days >= 0, so already-expired items were
+  // never flagged anywhere. isExpiredOrExpiringSoon fixes that.
+  const expiringSoon = items.filter((item) => isExpiredOrExpiringSoon(item.expiry_date, 7)).length;
 
-  // Count items by category
   const categoryCounts = items.reduce((acc, item) => {
     acc[item.category] = (acc[item.category] || 0) + 1;
     return acc;
   }, {} as Record<string, number>);
 
-  // Calculate well-managed items (not expiring soon AND not low stock)
+  // Calculate well-managed items (not expired, not expiring soon, AND not low stock)
   const wellManagedItems = items.filter((item) => {
-    if (!item.expiry_date) return true; // No expiry concern
-    const daysToExpiry = Math.ceil(
-      (new Date(item.expiry_date).getTime() - new Date().getTime()) / (1000 * 60 * 60 * 24)
-    );
+    if (isExpired(item.expiry_date)) return false;
     const daysLeft = item.daily_usage > 0 ? item.quantity / item.daily_usage : 999;
-    return daysToExpiry >= 7 && daysLeft >= 3; // Not expiring soon and not low stock
+    return !isExpiredOrExpiringSoon(item.expiry_date, 7) && daysLeft >= 3;
   }).length;
 
-  // Predicted Savings: $5 per well-managed item (estimated waste prevention value)
   const predictedSavings = totalItems > 0 ? Math.round(wellManagedItems * 5) : 0;
-
-  // Carbon Reduced: 0.5kg CO2 per well-managed item (waste prevention)
-  // Round to 2 decimal places for readability
   const carbonReduced = totalItems > 0 ? Math.round(wellManagedItems * 0.5 * 100) / 100 : 0;
 
   return {

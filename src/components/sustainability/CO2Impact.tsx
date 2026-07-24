@@ -1,12 +1,15 @@
 import React from 'react';
 import { InventoryItem, Stats } from '../../services/api';
 import { SimpleLineChart } from '../charts/SimpleChart';
+import { isExpiredOrExpiringSoon } from '../../utils/expiry';
 
 type Props = { items: InventoryItem[]; stats: Stats | null };
 
 const CO2Impact: React.FC<Props> = ({ items }) => {
   // synthetic CO2 impact based on number of wasted items
-  const wasted = items.filter((it) => it.quantity <= 0).length;
+  // "Wasted" matches FoodWasteTracker: out of stock OR already past its
+  // expiry date, not just quantity <= 0.
+  const wasted = items.filter((it) => (it.quantity ?? 0) <= 0 || isExpiredOrExpiringSoon(it.expiry_date, 0)).length;
   const labels = ['Week -4', 'Week -3', 'Week -2', 'Week -1', 'This Week'];
   const base = Math.max(1, Math.round(wasted || 5));
   const data = labels.map((_, i) => Math.round(base * (1 + i * 0.5)));

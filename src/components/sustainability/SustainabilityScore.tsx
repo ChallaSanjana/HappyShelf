@@ -1,11 +1,14 @@
 import React from 'react';
 import { InventoryItem, Stats } from '../../services/api';
+import { isExpiredOrExpiringSoon } from '../../utils/expiry';
 
 type Props = { items: InventoryItem[]; stats: Stats | null };
 
 const SustainabilityScore: React.FC<Props> = ({ items }) => {
   // rudimentary score: fewer wasted and more recycling -> higher score
-  const wasted = items.filter((it) => it.quantity <= 0).length;
+  // "Wasted" matches FoodWasteTracker: out of stock OR already past its
+  // expiry date, not just quantity <= 0.
+  const wasted = items.filter((it) => (it.quantity ?? 0) <= 0 || isExpiredOrExpiringSoon(it.expiry_date, 0)).length;
   const total = Math.max(1, items.length);
   const score = Math.max(0, Math.round(((total - wasted) / total) * 100));
 

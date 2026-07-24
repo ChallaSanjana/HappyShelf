@@ -4,7 +4,7 @@ import { SimpleBarChart } from '../charts/SimpleChart';
 
 type Props = { items: InventoryItem[]; stats: Stats | null };
 
-const StockLevelsChart: React.FC<Props> = ({ items, stats }) => {
+const StockLevelsChart: React.FC<Props> = ({ items }) => {
   const labels = items.slice(0, 6).map((i) => i.name || 'Item');
   const data = items.slice(0, 6).map((i) => i.quantity || 0);
 

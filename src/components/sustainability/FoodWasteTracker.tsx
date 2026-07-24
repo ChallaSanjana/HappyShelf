@@ -1,16 +1,21 @@
 import React from 'react';
 import { InventoryItem, Stats } from '../../services/api';
 import { SimpleBarChart } from '../charts/SimpleChart';
+import { isExpiredOrExpiringSoon } from '../../utils/expiry';
 
 type Props = { items: InventoryItem[]; stats: Stats | null };
 
 const FoodWasteTracker: React.FC<Props> = ({ items }) => {
-  // simple waste buckets based on expiry + quantity
-  const wasted = items.filter((it) => it.quantity <= 0).length;
+  // "Wasted" = out of stock, or already past its expiry date (both are
+  // genuine waste). The previous version only counted quantity <= 0 as
+  // wasted and used a `days >= 0` guard on "expiring soon", so an
+  // already-expired item with stock still on the shelf was counted as
+  // neither wasted nor expiring — it landed in "Safe", which is the
+  // opposite of what a food-waste tracker should say.
+  const wasted = items.filter((it) => (it.quantity ?? 0) <= 0 || isExpiredOrExpiringSoon(it.expiry_date, 0)).length;
   const expiringSoon = items.filter((it) => {
-    if (!it.expiry_date) return false;
-    const days = Math.ceil((new Date(it.expiry_date).getTime() - Date.now()) / (1000 * 60 * 60 * 24));
-    return days >= 0 && days <= 7;
+    if ((it.quantity ?? 0) <= 0 || isExpiredOrExpiringSoon(it.expiry_date, 0)) return false;
+    return isExpiredOrExpiringSoon(it.expiry_date, 7);
   }).length;
   const safe = Math.max(0, items.length - wasted - expiringSoon);
 

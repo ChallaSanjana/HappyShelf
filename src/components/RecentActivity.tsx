@@ -1,5 +1,6 @@
 import React from 'react';
 import { InventoryItem, Stats } from '../services/api';
+import { getDaysToExpiry } from '../utils/expiry';
 
 interface Activity {
   id: string | number;
@@ -17,7 +18,6 @@ interface Props {
 export const RecentActivity: React.FC<Props> = ({ items, stats }) => {
   const activities: Activity[] = [];
 
-  // Low stock items (days left < 3)
   const low = items
     .map((it) => ({
       item: it,
@@ -36,27 +36,28 @@ export const RecentActivity: React.FC<Props> = ({ items, stats }) => {
     });
   });
 
-  // Expiring soon (within 7 days)
+  // Expiring soon (within 7 days) OR already expired.
+  // Previously this filtered on `daysToExpiry >= 0`, so an item that had
+  // already passed its expiry date silently dropped out of the activity
+  // feed instead of showing up as the most urgent item on the list.
   const expiring = items
-    .filter((it) => it.expiry_date)
-    .map((it) => ({
-      item: it,
-      daysToExpiry: Math.ceil((new Date(it.expiry_date!).getTime() - Date.now()) / (1000 * 60 * 60 * 24)),
-    }))
-    .filter((x) => x.daysToExpiry >= 0 && x.daysToExpiry < 7)
+    .map((it) => ({ item: it, daysToExpiry: getDaysToExpiry(it.expiry_date) }))
+    .filter((x): x is { item: InventoryItem; daysToExpiry: number } => x.daysToExpiry !== null && x.daysToExpiry < 7)
     .slice(0, 5);
 
   expiring.forEach((e) => {
+    const expired = e.daysToExpiry < 0;
     activities.push({
       id: `exp-${e.item.id}`,
-      title: `${e.item.name} expiring soon`,
-      desc: `Expires in ${e.daysToExpiry} day${e.daysToExpiry === 1 ? '' : 's'}`,
+      title: expired ? `${e.item.name} has expired` : `${e.item.name} expiring soon`,
+      desc: expired
+        ? `Expired ${Math.abs(e.daysToExpiry)} day${Math.abs(e.daysToExpiry) === 1 ? '' : 's'} ago`
+        : `Expires in ${e.daysToExpiry} day${e.daysToExpiry === 1 ? '' : 's'}`,
       status: 'pending',
-      time: `${e.daysToExpiry} days`,
+      time: expired ? `${Math.abs(e.daysToExpiry)} days overdue` : `${e.daysToExpiry} days`,
     });
   });
 
-  // A summary activity using stats
   if (stats) {
     activities.push({
       id: 'summary',
@@ -67,7 +68,6 @@ export const RecentActivity: React.FC<Props> = ({ items, stats }) => {
     });
   }
 
-  // Sort: pending first, then acknowledged, then completed
   activities.sort((a, b) => {
     const order = { pending: 0, acknowledged: 1, completed: 2 } as const;
     return order[a.status] - order[b.status];
@@ -83,9 +83,8 @@ export const RecentActivity: React.FC<Props> = ({ items, stats }) => {
         <div key={a.id} className="flex items-start gap-3">
           <div className="flex-shrink-0">
             <div
-              className={`w-10 h-10 rounded-full flex items-center justify-center ${
-                a.status === 'pending' ? 'bg-yellow-100 text-yellow-800' : a.status === 'acknowledged' ? 'bg-blue-100 text-blue-800' : 'bg-green-100 text-green-800'
-              }`}
+              className={`w-10 h-10 rounded-full flex items-center justify-center ${a.status === 'pending' ? 'bg-yellow-100 text-yellow-800' : a.status === 'acknowledged' ? 'bg-blue-100 text-blue-800' : 'bg-green-100 text-green-800'
+                }`}
             >
               {a.status === 'pending' ? '!' : a.status === 'acknowledged' ? 'i' : '✓'}
             </div>

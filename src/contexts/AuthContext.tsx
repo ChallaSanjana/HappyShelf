@@ -33,7 +33,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     setIsLoading(false);
   }, []);
 
-  const API_BASE = (import.meta.env.VITE_API_URL as string) || 'http://localhost:5001/api';
+  const API_BASE = (import.meta.env.VITE_API_URL as string) || 'http://localhost:5000/api';
 
   async function parseErrorResponse(response: Response) {
     try {

@@ -1,5 +1,6 @@
 import { InventoryItem } from '../services/api';
 import { Pencil, Trash2 } from 'lucide-react';
+import { getDaysToExpiry } from '../utils/expiry';
 
 const getCategoryColor = (category: string): string => {
   const colors: Record<string, string> = {
@@ -26,32 +27,41 @@ interface InventoryTableProps {
   onReorder?: (item: InventoryItem) => void;
 }
 
-export const InventoryTable = ({ items, onEdit, onDelete }: InventoryTableProps) => {
+export const InventoryTable = ({ items, onEdit, onDelete, onReorder }: InventoryTableProps) => {
   const calculateDaysLeft = (item: InventoryItem) => {
     if (item.daily_usage <= 0) return 'N/A';
     return (item.quantity / item.daily_usage).toFixed(1);
   };
 
-  const getDaysToExpiry = (expiryDate: string | null) => {
-    if (!expiryDate) return 'N/A';
-    const days = Math.ceil(
-      (new Date(expiryDate).getTime() - new Date().getTime()) / (1000 * 60 * 60 * 24)
-    );
-    return days;
-  };
+  const getStatus = (item: InventoryItem): 'out' | 'expired' | 'critical' | 'warning' | 'good' => {
+    if ((item.quantity ?? 0) <= 0) return 'out';
 
-  const getStatusColor = (item: InventoryItem) => {
-    if ((item.quantity ?? 0) <= 0) return 'bg-red-100 text-red-700';
     const daysLeft = item.daily_usage > 0 ? item.quantity / item.daily_usage : 999;
     const daysToExpiry = getDaysToExpiry(item.expiry_date);
 
-    if (daysLeft < 3 || (typeof daysToExpiry === 'number' && daysToExpiry >= 0 && daysToExpiry < 7)) {
-      return 'bg-red-100 text-red-700';
-    }
-    if (daysLeft < 7 || (typeof daysToExpiry === 'number' && daysToExpiry >= 0 && daysToExpiry < 14)) {
-      return 'bg-orange-100 text-orange-700';
-    }
-    return 'bg-green-100 text-green-700';
+    // Already past its expiry date — this used to fall through to "Good"
+    // because the old check required daysToExpiry >= 0.
+    if (daysToExpiry !== null && daysToExpiry < 0) return 'expired';
+
+    if (daysLeft < 3 || (daysToExpiry !== null && daysToExpiry < 7)) return 'critical';
+    if (daysLeft < 7 || (daysToExpiry !== null && daysToExpiry < 14)) return 'warning';
+    return 'good';
+  };
+
+  const statusStyles: Record<ReturnType<typeof getStatus>, string> = {
+    out: 'bg-red-100 text-red-700',
+    expired: 'bg-red-100 text-red-700',
+    critical: 'bg-red-100 text-red-700',
+    warning: 'bg-orange-100 text-orange-700',
+    good: 'bg-green-100 text-green-700',
+  };
+
+  const statusLabels: Record<ReturnType<typeof getStatus>, string> = {
+    out: 'Out of stock',
+    expired: 'Expired',
+    critical: 'Critical',
+    warning: 'Warning',
+    good: 'Good',
   };
 
   if (items.length === 0) {
@@ -67,90 +77,65 @@ export const InventoryTable = ({ items, onEdit, onDelete }: InventoryTableProps)
       <table className="w-full">
         <thead className="bg-gray-50 border-b border-gray-200">
           <tr>
-            <th className="px-6 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">
-              Name
-            </th>
-            <th className="px-6 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">
-              Category
-            </th>
-            <th className="px-6 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">
-              Quantity
-            </th>
-            <th className="px-6 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">
-              Daily Usage
-            </th>
-            <th className="px-6 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">
-              Days Left
-            </th>
-            <th className="px-6 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">
-              Expiry Date
-            </th>
-            <th className="px-6 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">
-              Status
-            </th>
-            <th className="px-6 py-3 text-right text-xs font-medium text-gray-700 uppercase tracking-wider">
-              Actions
-            </th>
+            <th className="px-6 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">Name</th>
+            <th className="px-6 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">Category</th>
+            <th className="px-6 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">Quantity</th>
+            <th className="px-6 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">Daily Usage</th>
+            <th className="px-6 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">Days Left</th>
+            <th className="px-6 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">Expiry Date</th>
+            <th className="px-6 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">Status</th>
+            <th className="px-6 py-3 text-right text-xs font-medium text-gray-700 uppercase tracking-wider">Actions</th>
           </tr>
         </thead>
         <tbody className="bg-white divide-y divide-gray-200">
-          {items.map((item) => (
-            <tr key={item.id} className="hover:bg-gray-50 transition">
-              <td className="px-6 py-4 whitespace-nowrap">
-                <div className="text-sm font-medium text-gray-900">{item.name}</div>
-              </td>
-              <td className="px-6 py-4 whitespace-nowrap">
-                <span className={`px-2.5 py-1 inline-flex text-xs font-medium rounded-full border ${getCategoryColor(item.category)}`}>
-                  {item.category}
-                </span>
-              </td>
-              <td className="px-6 py-4 whitespace-nowrap">
-                <div className="text-sm text-gray-900">{item.quantity}</div>
-              </td>
-              <td className="px-6 py-4 whitespace-nowrap">
-                <div className="text-sm text-gray-900">{item.daily_usage}</div>
-              </td>
-              <td className="px-6 py-4 whitespace-nowrap">
-                <div className="text-sm text-gray-900">{calculateDaysLeft(item)}</div>
-              </td>
-              <td className="px-6 py-4 whitespace-nowrap">
-                <div className="text-sm text-gray-900">
-                  {item.expiry_date
-                    ? new Date(item.expiry_date).toLocaleDateString()
-                    : 'N/A'}
-                </div>
-              </td>
-              <td className="px-6 py-4 whitespace-nowrap">
-                <span
-                  className={`px-2 py-1 inline-flex text-xs leading-5 font-semibold rounded-full ${getStatusColor(
-                    item
-                  )}`}
-                >
-                  { (item.quantity ?? 0) <= 0 ? 'Out of stock' : (getStatusColor(item).includes('red') ? 'Critical' : getStatusColor(item).includes('orange') ? 'Warning' : 'Good') }
-                </span>
-              </td>
-              <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
-                <button
-                  onClick={() => onEdit(item)}
-                  className="text-green-600 hover:text-green-900 mr-3"
-                >
-                  <Pencil className="w-4 h-4" />
-                </button>
-                <button
-                  onClick={() => onReorder ? onReorder(item) : alert('Reorder not available')}
-                  className="text-blue-600 hover:text-blue-900 mr-3"
-                >
-                  Reorder
-                </button>
-                <button
-                  onClick={() => onDelete(item.id)}
-                  className="text-red-600 hover:text-red-900"
-                >
-                  <Trash2 className="w-4 h-4" />
-                </button>
-              </td>
-            </tr>
-          ))}
+          {items.map((item) => {
+            const status = getStatus(item);
+            return (
+              <tr key={item.id} className="hover:bg-gray-50 transition">
+                <td className="px-6 py-4 whitespace-nowrap">
+                  <div className="text-sm font-medium text-gray-900">{item.name}</div>
+                </td>
+                <td className="px-6 py-4 whitespace-nowrap">
+                  <span className={`px-2.5 py-1 inline-flex text-xs font-medium rounded-full border ${getCategoryColor(item.category)}`}>
+                    {item.category}
+                  </span>
+                </td>
+                <td className="px-6 py-4 whitespace-nowrap">
+                  <div className="text-sm text-gray-900">{item.quantity}</div>
+                </td>
+                <td className="px-6 py-4 whitespace-nowrap">
+                  <div className="text-sm text-gray-900">{item.daily_usage}</div>
+                </td>
+                <td className="px-6 py-4 whitespace-nowrap">
+                  <div className="text-sm text-gray-900">{calculateDaysLeft(item)}</div>
+                </td>
+                <td className="px-6 py-4 whitespace-nowrap">
+                  <div className="text-sm text-gray-900">
+                    {item.expiry_date ? new Date(item.expiry_date).toLocaleDateString() : 'N/A'}
+                  </div>
+                </td>
+                <td className="px-6 py-4 whitespace-nowrap">
+                  <span className={`px-2 py-1 inline-flex text-xs leading-5 font-semibold rounded-full ${statusStyles[status]}`}>
+                    {statusLabels[status]}
+                  </span>
+                </td>
+                <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+                  <button onClick={() => onEdit(item)} className="text-green-600 hover:text-green-900 mr-3">
+                    <Pencil className="w-4 h-4" />
+                  </button>
+                  <button
+                    onClick={() => onReorder ? onReorder(item) : alert('Reorder not available')}
+                    className="text-blue-600 hover:text-blue-900 mr-3"
+                  >
+                    Reorder
+                  </button>
+                  <button onClick={() => onDelete(item.id)} className="text-red-600 hover:text-red-900">
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                </td>
+              </tr>
+            );
+          })}
         </tbody>
       </table>
     </div>

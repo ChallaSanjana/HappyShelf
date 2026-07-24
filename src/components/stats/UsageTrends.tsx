@@ -4,7 +4,7 @@ import { SimpleLineChart } from '../charts/SimpleChart';
 
 type Props = { items: InventoryItem[]; stats: Stats | null };
 
-const UsageTrends: React.FC<Props> = ({ items, stats }) => {
+const UsageTrends: React.FC<Props> = ({ stats }) => {
   // Build sample monthly labels and data from items' daily_usage
   const labels = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul'];
   const totalDaily = labels.map((_, i) => Math.max(0, Math.round((stats?.totalItems || 0) * (0.8 + i * 0.05))));

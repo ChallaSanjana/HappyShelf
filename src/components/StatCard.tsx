@@ -4,7 +4,7 @@ interface StatCardProps {
   title: string;
   value: number;
   icon: ReactNode;
-  color: 'green' | 'orange' | 'red';
+  color: 'green' | 'orange' | 'red' | 'blue';
   prefix?: string;
   suffix?: string;
 }
@@ -13,6 +13,7 @@ const colorClasses = {
   green: 'bg-green-100 text-green-600',
   orange: 'bg-orange-100 text-orange-600',
   red: 'bg-red-100 text-red-600',
+  blue: 'bg-blue-100 text-blue-600',
 };
 
 export const StatCard = ({ title, value, icon, color, prefix, suffix }: StatCardProps) => {

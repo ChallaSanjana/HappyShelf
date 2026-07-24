@@ -1,5 +1,6 @@
 import { InventoryItem } from '../services/api';
 import { AlertTriangle, Calendar } from 'lucide-react';
+import { formatExpiryLabel } from '../utils/expiry';
 
 interface AlertCardProps {
   title: string;
@@ -13,12 +14,11 @@ export const AlertCard = ({ title, items, type }: AlertCardProps) => {
       if ((item.quantity ?? 0) <= 0) return 'Out of stock';
       const daysLeft = item.daily_usage > 0 ? (item.quantity / item.daily_usage).toFixed(1) : 'N/A';
       return `${daysLeft} days remaining`;
-    } else {
-      const daysToExpiry = Math.ceil(
-        (new Date(item.expiry_date!).getTime() - new Date().getTime()) / (1000 * 60 * 60 * 24)
-      );
-      return `Expires in ${daysToExpiry} day${daysToExpiry !== 1 ? 's' : ''}`;
     }
+    // formatExpiryLabel correctly handles items that are already past their
+    // expiry date ("Expired 3 days ago") instead of showing a nonsensical
+    // negative day count like "Expires in -3 days".
+    return formatExpiryLabel(item.expiry_date);
   };
 
   const Icon = type === 'stock' ? AlertTriangle : Calendar;

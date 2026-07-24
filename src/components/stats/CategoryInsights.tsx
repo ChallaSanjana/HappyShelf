@@ -4,7 +4,7 @@ import { SimplePieChart } from '../charts/SimpleChart';
 
 type Props = { items: InventoryItem[]; stats: Stats | null };
 
-const CategoryInsights: React.FC<Props> = ({ items, stats }) => {
+const CategoryInsights: React.FC<Props> = ({ stats }) => {
   const catCounts = stats?.categoryCounts || {};
   const labels = Object.keys(catCounts).length ? Object.keys(catCounts) : ['Dry Goods', 'Dairy', 'Produce'];
   const data = Object.keys(catCounts).length ? Object.values(catCounts) : [12, 7, 6];

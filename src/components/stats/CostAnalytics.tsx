@@ -4,7 +4,7 @@ import { SimpleLineChart } from '../charts/SimpleChart';
 
 type Props = { items: InventoryItem[]; stats: Stats | null };
 
-const CostAnalytics: React.FC<Props> = ({ items, stats }) => {
+const CostAnalytics: React.FC<Props> = ({ items }) => {
   // Placeholder showing cost trend (synthetic)
   const labels = ['Week 1', 'Week 2', 'Week 3', 'Week 4'];
   const data = labels.map((_, i) => Math.round((items.length || 10) * (100 + i * 20)));
