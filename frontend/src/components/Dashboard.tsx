@@ -327,6 +327,12 @@ export const Dashboard = () => {
 
   const getOutOfStockItems = () => items.filter((i) => (i.quantity ?? 0) <= 0);
 
+  const supplyConfidence = items.length === 0 ? 0 : Math.max(0, Math.min(100, Math.round(((items.length - getLowStockItems().length - getOutOfStockItems().length) / items.length) * 100)));
+  const completeItemsCount = items.filter(it => (it.daily_usage || 0) > 0 && it.expiry_date).length;
+  const modelConfidence = items.length === 0 ? 0 : Math.max(0, Math.min(100, Math.round(70 + (completeItemsCount / items.length) * 25)));
+  const recyclableCount = items.filter(it => ['produce', 'dairy', 'bakery', 'fruits', 'vegetables'].some(cat => it.category?.toLowerCase().includes(cat))).length;
+  const recyclingRate = items.length === 0 ? 0 : Math.max(0, Math.min(100, Math.round((recyclableCount / items.length) * 100)));
+
   if (isLoading) {
     return (
       <div className="min-h-screen bg-gray-50 flex items-center justify-center">
@@ -525,7 +531,7 @@ export const Dashboard = () => {
               <div className="mb-6">
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 mb-4">
                   <StatCard title="Demand Forecast" value={stats?.totalItems || 0} icon={<Package className="w-6 h-6" />} color="blue" />
-                  <StatCard title="Supply Confidence" value={85} icon={<Download className="w-6 h-6" />} color="green" />
+                  <StatCard title="Supply Confidence" value={supplyConfidence} icon={<Download className="w-6 h-6" />} color="green" suffix="%" />
                   <StatCard title="Predicted Shortages" value={stats?.lowStockItems || 0} icon={<AlertTriangle className="w-6 h-6" />} color="orange" />
                 </div>
               </div>
@@ -553,7 +559,7 @@ export const Dashboard = () => {
                       <div className="text-sm text-gray-700">
                         <p><strong>Top predicted restocks:</strong> {items.slice(0, 3).map(i => i.name).join(', ') || '—'}</p>
                         <p><strong>Next peak demand:</strong> {(new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)).toLocaleDateString()}</p>
-                        <p><strong>Model confidence:</strong> 82%</p>
+                        <p><strong>Model confidence:</strong> {modelConfidence}%</p>
                         <p className="mt-2"><strong>Notes:</strong> These outputs are generated from simple heuristics locally. Connect a trained model/service to replace with production forecasts.</p>
                       </div>
                     </div>
@@ -578,7 +584,7 @@ export const Dashboard = () => {
                   <StatCard title="Waste Reduced" value={stats?.totalItems ? Math.max(0, Math.round((stats.totalItems - (stats.expiringSoon || 0)) * 0.1)) : 0} icon={<Leaf className="w-6 h-6" />} color="green" />
                   <StatCard title="Eco Score" value={stats ? Math.max(0, Math.round(((stats.totalItems - (stats.expiringSoon || 0)) / Math.max(1, stats.totalItems)) * 100)) : 0} icon={<Leaf className="w-6 h-6" />} color="green" />
                   <StatCard title="Expiries Prevented" value={stats?.expiringSoon || getExpiringSoonItems().length} icon={<AlertTriangle className="w-6 h-6" />} color="orange" />
-                  <StatCard title="Recycling Rate" value={62} icon={<Package className="w-6 h-6" />} color="blue" />
+                  <StatCard title="Recycling Rate" value={recyclingRate} icon={<Package className="w-6 h-6" />} color="blue" suffix="%" />
                 </div>
               </div>
 

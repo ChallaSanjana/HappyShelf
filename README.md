@@ -29,21 +29,24 @@ A complete inventory management application with JWT authentication, built with 
 
 ```
 /
-├── src/                      # Frontend React application
-│   ├── components/           # React components
-│   │   ├── Login.tsx
-│   │   ├── Register.tsx
-│   │   ├── Dashboard.tsx
-│   │   ├── InventoryTable.tsx
-│   │   ├── ItemModal.tsx
-│   │   ├── StatCard.tsx
-│   │   └── AlertCard.tsx
-│   ├── contexts/             # React context providers
-│   │   └── AuthContext.tsx
-│   ├── services/             # API service layer
-│   │   └── api.ts
-│   ├── App.tsx
-│   └── main.tsx
+├── frontend/                 # Frontend React application
+│   ├── src/                  # React source files
+│   │   ├── components/       # React components
+│   │   │   ├── Login.tsx
+│   │   │   ├── Register.tsx
+│   │   │   ├── Dashboard.tsx
+│   │   │   ├── InventoryTable.tsx
+│   │   │   ├── ItemModal.tsx
+│   │   │   ├── StatCard.tsx
+│   │   │   └── AlertCard.tsx
+│   │   ├── contexts/             # React context providers
+│   │   │   └── AuthContext.tsx
+│   │   ├── services/             # API service layer
+│   │   │   └── api.ts
+│   │   ├── App.tsx
+│   │   └── main.tsx
+│   ├── package.json
+│   └── ...
 │
 └── backend/                  # Express backend API
     ├── src/
@@ -118,10 +121,11 @@ MONGODB_URI=mongodb://localhost:27017/happyshelf
 ### 2. Frontend Setup
 
 ```bash
+cd frontend
 npm install
 ```
 
-Create a `.env` file in the root directory:
+Create a `.env` file in the `frontend` directory:
 
 ```env
 VITE_API_URL=http://localhost:5000/api
@@ -143,6 +147,7 @@ The backend will run on `http://localhost:5000`
 In a new terminal:
 
 ```bash
+cd frontend
 npm run dev
 ```
 
@@ -189,6 +194,7 @@ daysLeft = quantity / daily_usage
 
 ### Frontend
 ```bash
+cd frontend
 npm run build
 ```
 

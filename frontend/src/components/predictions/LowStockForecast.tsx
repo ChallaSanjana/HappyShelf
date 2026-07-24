@@ -5,9 +5,20 @@ import { SimpleBarChart } from '../charts/SimpleChart';
 type Props = { items: InventoryItem[]; stats: Stats | null };
 
 const LowStockForecast: React.FC<Props> = ({ items }) => {
+  if (!items || items.length === 0) {
+    return (
+      <div>
+        <h4 className="text-md font-medium mb-3">Low Stock Forecast (7 days)</h4>
+        <div className="flex items-center justify-center h-[160px] border border-dashed border-gray-200 rounded-lg text-sm text-gray-500">
+          No inventory items to forecast.
+        </div>
+      </div>
+    );
+  }
+
   const sample = items.slice(0, 6);
-  const labels = sample.length ? sample.map((s) => s.name) : ['Item A', 'Item B', 'Item C'];
-  const data = sample.length ? sample.map((s) => Math.max(0, Math.round((s.quantity || 0) - (s.daily_usage || 0) * 7))) : [2, 5, 1];
+  const labels = sample.map((s) => s.name);
+  const data = sample.map((s) => Math.max(0, Math.round((s.quantity || 0) - (s.daily_usage || 0) * 7)));
 
   return (
     <div>
