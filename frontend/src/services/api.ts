@@ -25,6 +25,20 @@ export interface Stats {
   carbonReduced: number;
 }
 
+export interface ReorderHistoryEntry {
+  id: string;
+  householdId: string;
+  itemId: string;
+  itemName: string;
+  category: string;
+  quantityAdded: number;
+  newQuantity: number;
+  unit: string;
+  reorderedBy: string;
+  created_at: string;
+  updated_at?: string;
+}
+
 const getAuthHeaders = () => {
   const token = localStorage.getItem('token');
   return {
@@ -32,6 +46,15 @@ const getAuthHeaders = () => {
     Authorization: `Bearer ${token}`,
   };
 };
+
+async function parseErrorMessage(response: Response, fallback: string): Promise<string> {
+  try {
+    const data = await response.json();
+    return data.error || fallback;
+  } catch {
+    return fallback;
+  }
+}
 
 export const inventoryApi = {
   getItems: async (): Promise<InventoryItem[]> => {
@@ -64,24 +87,6 @@ export const inventoryApi = {
     const data = await response.json();
     return data.item;
   },
-  reorderItem: async (id: string): Promise<InventoryItem> => {
-    const response = await fetch(`${API_URL}/inventory/items/${id}/reorder`, {
-      method: 'PATCH',
-      headers: getAuthHeaders(),
-    });
-    if (!response.ok) {
-      let message = 'Failed to reorder item';
-      try {
-        const data = await response.json();
-        message = data.error || message;
-      } catch {
-        // ignore parse errors, use default message
-      }
-      throw new Error(message);
-    }
-    const data = await response.json();
-    return data.item;
-  },
 
   deleteItem: async (id: string): Promise<void> => {
     const response = await fetch(`${API_URL}/inventory/items/${id}`, {
@@ -89,6 +94,26 @@ export const inventoryApi = {
       headers: getAuthHeaders(),
     });
     if (!response.ok) throw new Error('Failed to delete item');
+  },
+
+  reorderItem: async (id: string, quantity?: number): Promise<{ item: InventoryItem; history: ReorderHistoryEntry }> => {
+    const response = await fetch(`${API_URL}/inventory/items/${id}/reorder`, {
+      method: 'PATCH',
+      headers: getAuthHeaders(),
+      body: JSON.stringify(quantity !== undefined ? { quantity } : {}),
+    });
+    if (!response.ok) throw new Error(await parseErrorMessage(response, 'Failed to reorder item'));
+    const data = await response.json();
+    return { item: data.item, history: data.history };
+  },
+
+  getReorderHistory: async (): Promise<ReorderHistoryEntry[]> => {
+    const response = await fetch(`${API_URL}/inventory/reorder-history`, {
+      headers: getAuthHeaders(),
+    });
+    if (!response.ok) throw new Error(await parseErrorMessage(response, 'Failed to fetch reorder history'));
+    const data = await response.json();
+    return data.history;
   },
 
   getStats: async (): Promise<Stats> => {
@@ -218,15 +243,6 @@ export interface ActionPlan {
   tasks: ActionPlanTask[];
   created_at: string;
   updated_at: string;
-}
-
-async function parseErrorMessage(response: Response, fallback: string): Promise<string> {
-  try {
-    const data = await response.json();
-    return data.error || fallback;
-  } catch {
-    return fallback;
-  }
 }
 
 export const actionPlanApi = {

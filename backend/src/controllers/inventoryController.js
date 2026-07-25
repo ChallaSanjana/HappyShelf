@@ -1,5 +1,6 @@
 import mongoose from 'mongoose';
 import Item from '../models/Item.js';
+import ReorderHistory from '../models/ReorderHistory.js';
 
 // In-memory storage fallback for development when MongoDB is unavailable.
 // Exported so other controllers (actionPlanController) that need to read
@@ -8,11 +9,23 @@ import Item from '../models/Item.js';
 export const devInventory = new Map(); // userId -> items[]
 let nextItemId = 1;
 
+// In-memory reorder history, mirroring the devInventory pattern above.
+// Keyed by householdId -> history entries[], newest first.
+const devReorderHistory = new Map();
+let nextHistoryId = 1;
+
 export function getUserItems(userId) {
   if (!devInventory.has(userId)) {
     devInventory.set(userId, []);
   }
   return devInventory.get(userId);
+}
+
+function getHouseholdHistory(householdId) {
+  if (!devReorderHistory.has(householdId)) {
+    devReorderHistory.set(householdId, []);
+  }
+  return devReorderHistory.get(householdId);
 }
 
 // readyState: 0 = disconnected, 1 = connected, 2 = connecting, 3 = disconnecting
@@ -357,12 +370,12 @@ export const updateItem = async (req, res) => {
   }
 };
 
-// Bumps a low/out-of-stock item back up to a target quantity and stamps
-// purchase_date as today, standing in for placing an actual purchase order.
-// Target = max(min_stock_level, daily_usage * 14, 1) so it always restocks
-// to at least a two-week buffer, or the item's own configured minimum if
-// that's higher.
-function calculateReorderQuantity(item) {
+// Default suggested reorder quantity: max(min_stock_level, daily_usage * 14, 1)
+// so it always restocks to at least a two-week buffer, or the item's own
+// configured minimum if that's higher. This is only a *default* now — the
+// frontend shows it to the user in a preview/edit modal before submitting,
+// and reorderItem below accepts an explicit override.
+function calculateSuggestedReorderQuantity(item) {
   const twoWeekBuffer = Math.ceil((item.daily_usage || 0) * 14);
   const minStock = item.min_stock_level || 0;
   return Math.max(minStock, twoWeekBuffer, 1);
@@ -373,9 +386,22 @@ export const reorderItem = async (req, res) => {
     if (rejectStaleDevSession(req, res)) return;
 
     const { id } = req.params;
+    const { quantity } = req.body;
 
     if (isDbConnected() && !isValidObjectId(id)) {
       return res.status(400).json({ error: 'Invalid item id' });
+    }
+
+    // Optional client-supplied override from the reorder preview/edit modal.
+    // If omitted or invalid, falls back to the server-calculated default so
+    // the endpoint still works for any caller that doesn't send a quantity.
+    let requestedQty = undefined;
+    if (quantity !== undefined && quantity !== null && quantity !== '') {
+      const parsed = parseInt(quantity, 10);
+      if (!Number.isFinite(parsed) || parsed <= 0) {
+        return res.status(400).json({ error: 'Reorder quantity must be a positive number' });
+      }
+      requestedQty = parsed;
     }
 
     const today = new Date().toISOString().split('T')[0];
@@ -386,11 +412,30 @@ export const reorderItem = async (req, res) => {
       if (!item) {
         return res.status(404).json({ error: 'Item not found' });
       }
-      const reorderQty = calculateReorderQuantity(item);
+      const reorderQty = requestedQty !== undefined ? requestedQty : calculateSuggestedReorderQuantity(item);
       item.quantity = item.quantity + reorderQty;
       item.purchase_date = today;
       item.updated_at = new Date().toISOString();
-      return res.json({ message: 'Item reordered successfully (dev mode)', item });
+
+      const historyEntry = {
+        id: `dev_hist_${nextHistoryId++}`,
+        household_id: req.user.householdId,
+        item_id: item.id,
+        item_name: item.name,
+        category: item.category,
+        quantity_added: reorderQty,
+        new_quantity: item.quantity,
+        unit: item.unit,
+        reordered_by: req.user.userId,
+        created_at: new Date().toISOString(),
+      };
+      getHouseholdHistory(req.user.householdId).unshift(historyEntry);
+
+      return res.json({
+        message: 'Item reordered successfully (dev mode)',
+        item,
+        history: historyEntry,
+      });
     }
 
     const existingItem = await Item.findOne({ _id: id, user_id: req.user.householdId });
@@ -398,7 +443,7 @@ export const reorderItem = async (req, res) => {
       return res.status(404).json({ error: 'Item not found' });
     }
 
-    const reorderQty = calculateReorderQuantity(existingItem);
+    const reorderQty = requestedQty !== undefined ? requestedQty : calculateSuggestedReorderQuantity(existingItem);
 
     const updatedItem = await Item.findOneAndUpdate(
       { _id: id, user_id: req.user.householdId },
@@ -406,10 +451,47 @@ export const reorderItem = async (req, res) => {
       { new: true }
     );
 
-    res.json({ message: 'Item reordered successfully', item: updatedItem });
+    const historyEntry = await ReorderHistory.create({
+      household_id: req.user.householdId,
+      item_id: updatedItem._id.toString(),
+      item_name: updatedItem.name,
+      category: updatedItem.category,
+      quantity_added: reorderQty,
+      new_quantity: updatedItem.quantity,
+      unit: updatedItem.unit,
+      reordered_by: req.user.userId,
+    });
+
+    res.json({
+      message: 'Item reordered successfully',
+      item: updatedItem,
+      history: historyEntry,
+    });
   } catch (error) {
     console.error('Reorder item error:', error);
     res.status(500).json({ error: 'Failed to reorder item' });
+  }
+};
+
+export const getReorderHistory = async (req, res) => {
+  try {
+    if (rejectStaleDevSession(req, res)) return;
+
+    const householdId = req.user.householdId;
+
+    if (!isDbConnected()) {
+      const history = getHouseholdHistory(householdId).slice(0, 50);
+      return res.json({ history });
+    }
+
+    const history = await ReorderHistory.find({ household_id: householdId })
+      .sort({ created_at: -1 })
+      .limit(50);
+
+    res.json({ history });
+  } catch (error) {
+    console.error('Get reorder history error:', error);
+    res.status(500).json({ error: 'Failed to fetch reorder history' });
   }
 };
 

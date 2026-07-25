@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useAuth } from '../contexts/AuthContext';
-import { inventoryApi, teamApi, TeamMember, InventoryItem, Stats, PredictionsResponse, actionPlanApi, ActionPlan } from '../services/api';
+import { inventoryApi, teamApi, TeamMember, InventoryItem, Stats, PredictionsResponse, actionPlanApi, ActionPlan, ReorderHistoryEntry } from '../services/api';
 import { calculateMetrics } from '../utils/metricsCalculator';
 import { StatCard } from './StatCard';
 import { InventoryTable } from './InventoryTable';
@@ -10,7 +10,7 @@ import { ForecastChart } from './ForecastChart';
 import { RecentActivity } from './RecentActivity';
 import Sidebar from './Sidebar';
 import AddMemberForm from './AddMemberForm';
-
+import { ReorderModal } from './ReorderModal';
 import { isExpiredOrExpiringSoon } from '../utils/expiry';
 // stats components
 import UsageTrends from './stats/UsageTrends';
@@ -44,7 +44,8 @@ export const Dashboard = () => {
   const [teamMembers, setTeamMembers] = useState<TeamMember[]>([]);
   const [actionPlans, setActionPlans] = useState<ActionPlan[]>([]);
   const [isCreatingActionPlan, setIsCreatingActionPlan] = useState(false);
-
+  const [reorderHistory, setReorderHistory] = useState<ReorderHistoryEntry[]>([]);
+  const [reorderingItem, setReorderingItem] = useState<InventoryItem | null>(null);
   const [settingsState, setSettingsState] = useState({
     profileName: user?.name || '',
     emailNotifications: true,
@@ -246,6 +247,13 @@ export const Dashboard = () => {
         console.warn('Failed to load ML predictions:', predError);
         setPredictions(null);
       }
+
+      try {
+        const historyData = await inventoryApi.getReorderHistory();
+        setReorderHistory(historyData);
+      } catch (histError) {
+        console.warn('Failed to load reorder history:', histError);
+      }
     } catch (error) {
       console.error('Failed to load data:', error);
     } finally {
@@ -288,17 +296,23 @@ export const Dashboard = () => {
     }
   };
 
-  const handleReorder = async (item: InventoryItem) => {
-    if (!confirm(`Reorder ${item.name}? This will restock it to a healthy stock level.`)) return;
-    try {
-      await inventoryApi.reorderItem(item.id);
-      await loadData();
-      alert(`${item.name} has been reordered successfully.`);
-    } catch (error) {
-      console.error('Failed to reorder item:', error);
-      alert(error instanceof Error ? error.message : 'Failed to reorder item');
-    }
+  const handleReorder = (item: InventoryItem) => {
+    setReorderingItem(item);
   };
+
+  const handleConfirmReorder = async (quantity: number) => {
+    if (!reorderingItem) return;
+    const { item: updatedItem, history: historyEntry } = await inventoryApi.reorderItem(reorderingItem.id, quantity);
+
+    // Instant UI update — no need to wait for a full reload
+    setItems((prev) => prev.map((it) => (it.id === updatedItem.id ? updatedItem : it)));
+    setReorderHistory((prev) => [historyEntry, ...prev].slice(0, 50));
+    setReorderingItem(null);
+
+    // Refresh predictions/stats in the background so forecasts reflect the new stock
+    loadData();
+  };
+
   const handleSaveItem = async (itemData: Partial<InventoryItem>) => {
     try {
       if (editingItem) {
@@ -869,6 +883,33 @@ export const Dashboard = () => {
                 onReorder={handleReorder}
                 readOnly={role === 'Viewer'}
               />
+
+              {reorderHistory.length > 0 && (
+                <div className="p-6 border-t border-gray-200">
+                  <h3 className="text-lg font-semibold text-gray-800 mb-4">Recent Reorders</h3>
+                  <div className="space-y-3">
+                    {reorderHistory.slice(0, 8).map((entry) => (
+                      <div key={entry.id} className="flex items-center justify-between border-b border-gray-100 pb-3 last:border-b-0 last:pb-0">
+                        <div>
+                          <p className="font-medium text-gray-800">{entry.itemName}</p>
+                          <p className="text-sm text-gray-500">{entry.category}</p>
+                        </div>
+                        <div className="text-right">
+                          <p className="text-sm font-medium text-green-600">
+                            +{entry.quantityAdded} {entry.unit}
+                          </p>
+                          <p className="text-xs text-gray-500">
+                            New total: {entry.newQuantity} {entry.unit}
+                          </p>
+                          <p className="text-xs text-gray-400">
+                            {new Date(entry.created_at).toLocaleString()}
+                          </p>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
@@ -1138,6 +1179,14 @@ export const Dashboard = () => {
           item={editingItem}
           onSave={handleSaveItem}
           onClose={() => setIsModalOpen(false)}
+        />
+      )}
+
+      {reorderingItem && (
+        <ReorderModal
+          item={reorderingItem}
+          onConfirm={handleConfirmReorder}
+          onClose={() => setReorderingItem(null)}
         />
       )}
     </div>
