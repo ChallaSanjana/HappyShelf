@@ -85,6 +85,65 @@ export const Dashboard = () => {
 
   const role = user?.role || 'Viewer';
 
+  // Mirrors the backend's canAssignRole/canActOnMember rules in
+  // teamController.js: a Manager may only assign or act on Staff/Viewer
+  // members, never Admin/Manager. Keeping this in sync with the backend is
+  // just a UX nicety — the server is the actual enforcement point.
+  const assignableRoles = role === 'Admin' ? ['Admin', 'Manager', 'Staff', 'Viewer'] : ['Staff', 'Viewer'];
+  const canActOnMemberRole = (memberRole: string) =>
+    role === 'Admin' || (role === 'Manager' && (memberRole === 'Staff' || memberRole === 'Viewer'));
+
+  // How many active Admins are currently on the team — mirrors the
+  // backend's last-Admin safeguard in teamController.js so the UI can grey
+  // out the risky option instead of letting the user hit a 403.
+  const activeAdminCount = teamMembers.filter((m) => m.role === 'Admin' && m.isActive !== false).length;
+  const isSoleRemainingAdmin = (member: TeamMember) => member.role === 'Admin' && activeAdminCount <= 1;
+
+  // Self-service profile editing (name/email/password/avatar) is open to
+  // any team member editing their own row. Role and active-status are
+  // deliberately kept out of this form — those go through the role
+  // dropdown below, which already enforces who can touch what.
+  const [editingSelfProfile, setEditingSelfProfile] = useState(false);
+  const [selfProfileForm, setSelfProfileForm] = useState({ name: '', email: '', password: '', avatarUrl: '' });
+  const [isSavingSelfProfile, setIsSavingSelfProfile] = useState(false);
+
+  const startEditingSelfProfile = (member: TeamMember) => {
+    setSelfProfileForm({ name: member.name, email: member.email, password: '', avatarUrl: member.avatarUrl || '' });
+    setEditingSelfProfile(true);
+  };
+
+  const saveSelfProfile = async (member: TeamMember) => {
+    if (!selfProfileForm.name.trim()) return alert('Enter a name');
+    if (!selfProfileForm.email.trim()) return alert('Enter an email');
+    if (selfProfileForm.password && selfProfileForm.password.length < 8) {
+      return alert('New password must be at least 8 characters');
+    }
+    setIsSavingSelfProfile(true);
+    try {
+      // Only send fields that actually changed (and never role/isActive —
+      // this form can't touch those, by design).
+      const updates: Partial<TeamMember> & { password?: string } = {};
+      if (selfProfileForm.name.trim() !== member.name) updates.name = selfProfileForm.name.trim();
+      if (selfProfileForm.email.trim() !== member.email) updates.email = selfProfileForm.email.trim();
+      if (selfProfileForm.avatarUrl.trim() !== (member.avatarUrl || '')) updates.avatarUrl = selfProfileForm.avatarUrl.trim();
+      if (selfProfileForm.password) updates.password = selfProfileForm.password;
+
+      if (Object.keys(updates).length === 0) {
+        setEditingSelfProfile(false);
+        return;
+      }
+
+      await teamApi.updateTeamMember(member.id, updates);
+      await fetchTeamMembers();
+      setEditingSelfProfile(false);
+    } catch (err) {
+      const error = err instanceof Error ? err : new Error(String(err));
+      alert(error.message || 'Failed to update your profile');
+    } finally {
+      setIsSavingSelfProfile(false);
+    }
+  };
+
   const fetchTeamMembers = useCallback(async () => {
     if (!user || (role !== 'Admin' && role !== 'Manager')) return;
     try {
@@ -471,9 +530,9 @@ export const Dashboard = () => {
                       {isRefreshing ? 'Refreshing...' : 'Refresh'}
                     </button>
                     <button
-                       onClick={handleExport}
-                       className="flex items-center gap-2 px-3 py-2 bg-white border border-gray-200 rounded-lg shadow-sm hover:bg-gray-50"
-                     >
+                      onClick={handleExport}
+                      className="flex items-center gap-2 px-3 py-2 bg-white border border-gray-200 rounded-lg shadow-sm hover:bg-gray-50"
+                    >
                       <Download className="w-4 h-4" />
                       Export
                     </button>
@@ -762,54 +821,158 @@ export const Dashboard = () => {
                 <div className="mb-6">
                   <h3 className="text-lg font-semibold mb-2">Team Members</h3>
                   <div className="space-y-3">
-                    {teamMembers.map((m) => (
-                      <div key={m.id} className="flex items-center justify-between border border-gray-100 rounded-lg p-3">
-                        <div>
-                          <div className="font-medium text-gray-800">{m.name}</div>
-                          <div className="text-sm text-gray-500">Email: {m.email} • Role: {m.role}</div>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <select
-                            value={m.role}
-                            onChange={async (e) => {
-                              try {
-                                await teamApi.updateTeamMember(m.id, { role: e.target.value });
-                                fetchTeamMembers();
-                              } catch {
-                                alert('Failed to update member role');
-                              }
-                            }}
-                            className="px-3 py-1 border rounded text-sm"
-                          >
-                            <option>Admin</option>
-                            <option>Manager</option>
-                            <option>Staff</option>
-                            <option>Viewer</option>
-                          </select>
-                          {m.id !== user?.id && (
-                            <button
-                              onClick={async () => {
-                                if (confirm(`Remove ${m.name}?`)) {
-                                  try {
-                                    await teamApi.deleteTeamMember(m.id);
-                                    fetchTeamMembers();
-                                  } catch {
-                                    alert('Failed to remove team member');
+                    {teamMembers.map((m) => {
+                      const isSelf = m.id === user?.id;
+                      // A Manager can never edit their own role/active-status
+                      // from here (mirrors the backend), and even an Admin
+                      // can't touch their own role/active-status if they're
+                      // the last remaining Admin.
+                      const roleEditableForSelf = role === 'Admin' && !isSoleRemainingAdmin(m);
+                      const roleSelectVisible = isSelf ? roleEditableForSelf : canActOnMemberRole(m.role);
+                      const removeVisible = !isSelf && canActOnMemberRole(m.role) && !isSoleRemainingAdmin(m);
+
+                      return (
+                        <div key={m.id} className="border border-gray-100 rounded-lg p-3">
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-3">
+                              {m.avatarUrl ? (
+                                <img src={m.avatarUrl} alt="" className="w-8 h-8 rounded-full object-cover" />
+                              ) : (
+                                <div className="w-8 h-8 rounded-full bg-gray-200 flex items-center justify-center text-xs text-gray-500">
+                                  {m.name.slice(0, 1).toUpperCase()}
+                                </div>
+                              )}
+                              <div>
+                                <div className="font-medium text-gray-800">
+                                  {m.name} {isSelf && <span className="text-xs text-gray-400">(you)</span>}
+                                  {m.isActive === false && <span className="ml-2 text-xs text-red-500">Deactivated</span>}
+                                </div>
+                                <div className="text-sm text-gray-500">Email: {m.email} • Role: {m.role}</div>
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              {roleSelectVisible ? (
+                                <select
+                                  value={m.role}
+                                  onChange={async (e) => {
+                                    try {
+                                      await teamApi.updateTeamMember(m.id, { role: e.target.value });
+                                      fetchTeamMembers();
+                                    } catch (err) {
+                                      const error = err instanceof Error ? err : new Error(String(err));
+                                      alert(error.message || 'Failed to update member role');
+                                    }
+                                  }}
+                                  className="px-3 py-1 border rounded text-sm"
+                                >
+                                  {/* Always include the member's current role even if it's
+                                      outside assignableRoles, so the select doesn't silently
+                                      jump to a different value than what's actually stored. */}
+                                  {(assignableRoles.includes(m.role) ? assignableRoles : [m.role, ...assignableRoles]).map((r) => (
+                                    <option key={r}>{r}</option>
+                                  ))}
+                                </select>
+                              ) : (
+                                <span
+                                  className="px-3 py-1 text-sm text-gray-500"
+                                  title={
+                                    isSelf
+                                      ? isSoleRemainingAdmin(m)
+                                        ? 'You are the only Admin — promote another member to Admin first.'
+                                        : 'You cannot change your own role from the Team panel. Ask an Admin.'
+                                      : "Only an Admin can change this member's role"
                                   }
-                                }
-                              }}
-                              className="text-sm text-red-600 hover:underline px-2 py-1"
-                            >
-                              Remove
-                            </button>
+                                >
+                                  {m.role}
+                                </span>
+                              )}
+                              {isSelf && (
+                                <button
+                                  onClick={() => startEditingSelfProfile(m)}
+                                  className="text-sm text-blue-600 hover:underline px-2 py-1"
+                                >
+                                  Edit profile
+                                </button>
+                              )}
+                              {removeVisible && (
+                                <button
+                                  onClick={async () => {
+                                    if (confirm(`Remove ${m.name}?`)) {
+                                      try {
+                                        await teamApi.deleteTeamMember(m.id);
+                                        fetchTeamMembers();
+                                      } catch (err) {
+                                        const error = err instanceof Error ? err : new Error(String(err));
+                                        alert(error.message || 'Failed to remove team member');
+                                      }
+                                    }
+                                  }}
+                                  className="text-sm text-red-600 hover:underline px-2 py-1"
+                                >
+                                  Remove
+                                </button>
+                              )}
+                              {!isSelf && m.role === 'Admin' && isSoleRemainingAdmin(m) && (
+                                <span className="text-xs text-gray-400" title="At least one Admin must always remain on the team">
+                                  Last Admin
+                                </span>
+                              )}
+                            </div>
+                          </div>
+
+                          {isSelf && editingSelfProfile && (
+                            <div className="mt-3 pt-3 border-t border-gray-100 grid grid-cols-1 sm:grid-cols-2 gap-3">
+                              <input
+                                value={selfProfileForm.name}
+                                onChange={(e) => setSelfProfileForm((s) => ({ ...s, name: e.target.value }))}
+                                placeholder="Full name"
+                                className="px-3 py-2 border rounded text-sm w-full"
+                              />
+                              <input
+                                type="email"
+                                value={selfProfileForm.email}
+                                onChange={(e) => setSelfProfileForm((s) => ({ ...s, email: e.target.value }))}
+                                placeholder="Email address"
+                                className="px-3 py-2 border rounded text-sm w-full"
+                              />
+                              <input
+                                type="password"
+                                value={selfProfileForm.password}
+                                onChange={(e) => setSelfProfileForm((s) => ({ ...s, password: e.target.value }))}
+                                placeholder="New password (leave blank to keep current)"
+                                className="px-3 py-2 border rounded text-sm w-full"
+                              />
+                              <input
+                                value={selfProfileForm.avatarUrl}
+                                onChange={(e) => setSelfProfileForm((s) => ({ ...s, avatarUrl: e.target.value }))}
+                                placeholder="Avatar image URL"
+                                className="px-3 py-2 border rounded text-sm w-full"
+                              />
+                              <div className="sm:col-span-2 flex items-center gap-2 justify-end">
+                                <button
+                                  onClick={() => setEditingSelfProfile(false)}
+                                  className="px-3 py-2 text-sm rounded border hover:bg-gray-50"
+                                  disabled={isSavingSelfProfile}
+                                >
+                                  Cancel
+                                </button>
+                                <button
+                                  onClick={() => saveSelfProfile(m)}
+                                  className="px-3 py-2 text-sm rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50"
+                                  disabled={isSavingSelfProfile}
+                                >
+                                  {isSavingSelfProfile ? 'Saving...' : 'Save profile'}
+                                </button>
+                              </div>
+                            </div>
                           )}
                         </div>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 </div>
 
-                <AddMemberForm onAdd={async (name, email, password, role) => {
+                <AddMemberForm assignableRoles={assignableRoles} onAdd={async (name, email, password, role) => {
                   try {
                     await teamApi.addTeamMember({ name, email, password, role });
                     fetchTeamMembers();

@@ -24,6 +24,17 @@ const userSchema = new mongoose.Schema(
       enum: ['Admin', 'Manager', 'Staff', 'Viewer'],
       default: 'Admin',
     },
+    avatar_url: {
+      type: String,
+      default: null,
+      trim: true,
+    },
+    // Soft-disable flag. Defaults to true so existing documents (and any
+    // query that doesn't explicitly filter on it) keep working as before.
+    is_active: {
+      type: Boolean,
+      default: true,
+    },
     household_id: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User',
@@ -55,8 +66,12 @@ userSchema.set('toJSON', {
     if (ret.household_id) {
       ret.householdId = ret.household_id.toString();
     }
+    ret.avatarUrl = ret.avatar_url || null;
+    ret.isActive = ret.is_active !== false;
     delete ret._id;
     delete ret.household_id;
+    delete ret.avatar_url;
+    delete ret.is_active;
     delete ret.__v;
     delete ret.password_hash;
     return ret;

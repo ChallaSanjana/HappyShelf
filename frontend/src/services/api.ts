@@ -114,6 +114,8 @@ export interface TeamMember {
   email: string;
   role: string;
   householdId: string;
+  avatarUrl?: string | null;
+  isActive?: boolean;
 }
 
 export const teamApi = {
@@ -137,13 +139,29 @@ export const teamApi = {
     return data.member;
   },
 
-  updateTeamMember: async (id: string, member: Partial<Omit<TeamMember, 'id' | 'householdId'>>): Promise<TeamMember> => {
+  // `password` is write-only (never comes back from the API) and `isActive`
+  // is included so the last-Admin safeguard on the backend has something to
+  // reject when it applies — both are optional partial updates just like
+  // the rest of the fields.
+  updateTeamMember: async (
+    id: string,
+    member: Partial<Omit<TeamMember, 'id' | 'householdId'>> & { password?: string }
+  ): Promise<TeamMember> => {
     const response = await fetch(`${API_URL}/team/${id}`, {
       method: 'PUT',
       headers: getAuthHeaders(),
       body: JSON.stringify(member),
     });
-    if (!response.ok) throw new Error('Failed to update team member');
+    if (!response.ok) {
+      let message = 'Failed to update team member';
+      try {
+        const data = await response.json();
+        message = data.error || message;
+      } catch {
+        // ignore parse errors, use default message
+      }
+      throw new Error(message);
+    }
     const data = await response.json();
     return data.member;
   },
@@ -153,6 +171,15 @@ export const teamApi = {
       method: 'DELETE',
       headers: getAuthHeaders(),
     });
-    if (!response.ok) throw new Error('Failed to delete team member');
+    if (!response.ok) {
+      let message = 'Failed to delete team member';
+      try {
+        const data = await response.json();
+        message = data.error || message;
+      } catch {
+        // ignore parse errors, use default message
+      }
+      throw new Error(message);
+    }
   },
 };
