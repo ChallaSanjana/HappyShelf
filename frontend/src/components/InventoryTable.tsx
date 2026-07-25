@@ -28,40 +28,64 @@ interface InventoryTableProps {
   readOnly?: boolean;
 }
 
+type StockStatus = 'out' | 'critical' | 'warning' | 'good';
+type ExpiryStatus = 'expired' | 'critical' | 'warning' | 'good' | 'none';
+
 export const InventoryTable = ({ items, onEdit, onDelete, onReorder, readOnly = false }: InventoryTableProps) => {
   const calculateDaysLeft = (item: InventoryItem) => {
     if (item.daily_usage <= 0) return 'N/A';
     return (item.quantity / item.daily_usage).toFixed(1);
   };
 
-  const getStatus = (item: InventoryItem): 'out' | 'expired' | 'critical' | 'warning' | 'good' => {
+  // Stock status depends only on quantity/daily_usage — completely
+  // independent of expiry. This is what a reorder actually affects, so it's
+  // the badge that should visibly change immediately after restocking.
+  const getStockStatus = (item: InventoryItem): StockStatus => {
     if ((item.quantity ?? 0) <= 0) return 'out';
-
     const daysLeft = item.daily_usage > 0 ? item.quantity / item.daily_usage : 999;
-    const daysToExpiry = getDaysToExpiry(item.expiry_date);
-
-    // Already past its expiry date — this used to fall through to "Good"
-    // because the old check required daysToExpiry >= 0.
-    if (daysToExpiry !== null && daysToExpiry < 0) return 'expired';
-
-    if (daysLeft < 3 || (daysToExpiry !== null && daysToExpiry < 7)) return 'critical';
-    if (daysLeft < 7 || (daysToExpiry !== null && daysToExpiry < 14)) return 'warning';
+    if (daysLeft < 3) return 'critical';
+    if (daysLeft < 7) return 'warning';
     return 'good';
   };
 
-  const statusStyles: Record<ReturnType<typeof getStatus>, string> = {
+  // Expiry status depends only on expiry_date — reordering never changes
+  // this, since adding more units of the same batch doesn't push out its
+  // expiry date. Kept as a separate badge so it can't mask a healthy stock
+  // level (or vice versa) the way a single merged "Status" column used to.
+  const getExpiryStatus = (item: InventoryItem): ExpiryStatus => {
+    const daysToExpiry = getDaysToExpiry(item.expiry_date);
+    if (daysToExpiry === null) return 'none';
+    if (daysToExpiry < 0) return 'expired';
+    if (daysToExpiry < 7) return 'critical';
+    if (daysToExpiry < 14) return 'warning';
+    return 'good';
+  };
+
+  const stockStyles: Record<StockStatus, string> = {
     out: 'bg-red-100 text-red-700',
+    critical: 'bg-red-100 text-red-700',
+    warning: 'bg-orange-100 text-orange-700',
+    good: 'bg-green-100 text-green-700',
+  };
+
+  const stockLabels: Record<StockStatus, string> = {
+    out: 'Out of stock',
+    critical: 'Critical',
+    warning: 'Low',
+    good: 'Good',
+  };
+
+  const expiryStyles: Record<Exclude<ExpiryStatus, 'none'>, string> = {
     expired: 'bg-red-100 text-red-700',
     critical: 'bg-red-100 text-red-700',
     warning: 'bg-orange-100 text-orange-700',
     good: 'bg-green-100 text-green-700',
   };
 
-  const statusLabels: Record<ReturnType<typeof getStatus>, string> = {
-    out: 'Out of stock',
+  const expiryLabels: Record<Exclude<ExpiryStatus, 'none'>, string> = {
     expired: 'Expired',
-    critical: 'Critical',
-    warning: 'Warning',
+    critical: 'Expiring soon',
+    warning: 'Use soon',
     good: 'Good',
   };
 
@@ -84,13 +108,15 @@ export const InventoryTable = ({ items, onEdit, onDelete, onReorder, readOnly = 
             <th className="px-6 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">Daily Usage</th>
             <th className="px-6 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">Days Left</th>
             <th className="px-6 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">Expiry Date</th>
-            <th className="px-6 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">Status</th>
+            <th className="px-6 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">Stock Status</th>
+            <th className="px-6 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">Expiry Status</th>
             {!readOnly && <th className="px-6 py-3 text-right text-xs font-medium text-gray-700 uppercase tracking-wider">Actions</th>}
           </tr>
         </thead>
         <tbody className="bg-white divide-y divide-gray-200">
           {items.map((item) => {
-            const status = getStatus(item);
+            const stockStatus = getStockStatus(item);
+            const expiryStatus = getExpiryStatus(item);
             return (
               <tr key={item.id} className="hover:bg-gray-50 transition">
                 <td className="px-6 py-4 whitespace-nowrap">
@@ -116,9 +142,18 @@ export const InventoryTable = ({ items, onEdit, onDelete, onReorder, readOnly = 
                   </div>
                 </td>
                 <td className="px-6 py-4 whitespace-nowrap">
-                  <span className={`px-2 py-1 inline-flex text-xs leading-5 font-semibold rounded-full ${statusStyles[status]}`}>
-                    {statusLabels[status]}
+                  <span className={`px-2 py-1 inline-flex text-xs leading-5 font-semibold rounded-full ${stockStyles[stockStatus]}`}>
+                    {stockLabels[stockStatus]}
                   </span>
+                </td>
+                <td className="px-6 py-4 whitespace-nowrap">
+                  {expiryStatus !== 'none' ? (
+                    <span className={`px-2 py-1 inline-flex text-xs leading-5 font-semibold rounded-full ${expiryStyles[expiryStatus]}`}>
+                      {expiryLabels[expiryStatus]}
+                    </span>
+                  ) : (
+                    <span className="text-xs text-gray-400">No expiry</span>
+                  )}
                 </td>
                 {!readOnly && (
                   <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">

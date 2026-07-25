@@ -391,9 +391,38 @@ export const Dashboard = () => {
   const parseCSV = (text: string): Record<string, string>[] => {
     const lines = text.split(/\r?\n/).filter((l) => l.trim() !== '');
     if (lines.length === 0) return [];
-    const headers = lines[0].split(',').map((h) => h.trim());
+
+    // Minimal quoted-field-aware CSV split (handles "a, b", "He said ""hi""")
+    const splitCsvLine = (line: string): string[] => {
+      const result: string[] = [];
+      let current = '';
+      let inQuotes = false;
+      for (let i = 0; i < line.length; i++) {
+        const char = line[i];
+        if (char === '"') {
+          if (inQuotes && line[i + 1] === '"') {
+            current += '"';
+            i++;
+          } else {
+            inQuotes = !inQuotes;
+          }
+        } else if (char === ',' && !inQuotes) {
+          result.push(current);
+          current = '';
+        } else {
+          current += char;
+        }
+      }
+      result.push(current);
+      return result.map((v) => v.trim());
+    };
+
+    // Normalize headers so "Quantity", "quantity", " Quantity " etc. all match
+    const rawHeaders = splitCsvLine(lines[0]);
+    const headers = rawHeaders.map((h) => h.trim().toLowerCase());
+
     const rows = lines.slice(1).map((line) => {
-      const values = line.split(',').map((v) => v.trim());
+      const values = splitCsvLine(line);
       const obj: Record<string, string> = {};
       headers.forEach((h, i) => {
         obj[h] = values[i] ?? '';
@@ -402,7 +431,6 @@ export const Dashboard = () => {
     });
     return rows;
   };
-
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const f = e.target.files?.[0];
     if (!f) return;
@@ -423,15 +451,39 @@ export const Dashboard = () => {
         return;
       }
 
+
+
       let created = 0;
       const errors: string[] = [];
       for (const row of itemsToCreate) {
-        // Map common fields; CSV headers should match these names: name, category, quantity, daily_usage, expiry_date
-        const rowName = typeof row.name === 'string' ? row.name : (typeof row.item === 'string' ? row.item : (typeof row.product === 'string' ? row.product : ''));
-        const rowCategory = typeof row.category === 'string' ? row.category : (typeof row.cat === 'string' ? row.cat : 'Uncategorized');
-        const rowQty = Number(row.quantity ?? row.qty ?? 0) || 0;
-        const rowUsage = Number(row.daily_usage ?? row.dailyUsage ?? row.usage ?? 0) || 0;
-        const rowExpiry = typeof row.expiry_date === 'string' ? row.expiry_date : (typeof row.expiry === 'string' ? row.expiry : (typeof row.expiryDate === 'string' ? row.expiryDate : null));
+        // Normalize keys so JSON imports match the same way CSV headers do
+        const normalized: Record<string, unknown> = {};
+        Object.entries(row).forEach(([k, v]) => {
+          normalized[k.trim().toLowerCase()] = v;
+        });
+
+        const rowName =
+          typeof normalized.name === 'string' ? normalized.name :
+            typeof normalized.item === 'string' ? normalized.item :
+              typeof normalized.product === 'string' ? normalized.product : '';
+
+        const rowCategory =
+          typeof normalized.category === 'string' ? normalized.category :
+            typeof normalized.cat === 'string' ? normalized.cat : 'Uncategorized';
+
+        const rowQty = Number(
+          normalized.quantity ?? normalized.qty ?? normalized['stock'] ?? 0
+        ) || 0;
+
+        const rowUsage = Number(
+          normalized.daily_usage ?? normalized.dailyusage ?? normalized['daily usage'] ?? normalized.usage ?? 0
+        ) || 0;
+
+        const rowExpiry =
+          typeof normalized.expiry_date === 'string' ? normalized.expiry_date :
+            typeof normalized.expiry === 'string' ? normalized.expiry :
+              typeof normalized.expirydate === 'string' ? normalized.expirydate :
+                typeof normalized['expiry date'] === 'string' ? (normalized['expiry date'] as string) : null;
 
         const payload: Omit<InventoryItem, 'id' | 'user_id' | 'created_at' | 'updated_at'> = {
           name: rowName,
@@ -439,11 +491,21 @@ export const Dashboard = () => {
           quantity: rowQty,
           daily_usage: rowUsage,
           expiry_date: rowExpiry || null,
-          unit: (row.unit as InventoryItem['unit']) || 'pcs',
+          unit: (normalized.unit as InventoryItem['unit']) || 'pcs',
         };
 
         if (!payload.name) {
           errors.push('Missing name for one row; skipped');
+          continue;
+        }
+
+        if (payload.quantity <= 0) {
+          errors.push(`${payload.name}: quantity must be greater than 0 (got "${row.quantity ?? row.qty ?? ''}")`);
+          continue;
+        }
+
+        if (payload.daily_usage <= 0) {
+          errors.push(`${payload.name}: daily usage must be greater than 0 (got "${row.daily_usage ?? row.usage ?? ''}")`);
           continue;
         }
 
@@ -455,7 +517,6 @@ export const Dashboard = () => {
           errors.push(`Failed to create ${payload.name}: ${error.message}`);
         }
       }
-
       await loadData();
       alert(`Import complete. Created ${created} items.${errors.length ? '\nErrors:\n' + errors.join('\n') : ''}`);
     } catch (err) {
