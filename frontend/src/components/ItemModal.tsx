@@ -34,6 +34,7 @@ export const ItemModal = ({ item, onSave, onClose }: ItemModalProps) => {
     purchase_date: '',
     min_stock_level: '',
     storage_location: '',
+    cost_per_unit: '',
   });
   const [error, setError] = useState('');
   const [isLoading, setIsLoading] = useState(false);
@@ -59,8 +60,9 @@ export const ItemModal = ({ item, onSave, onClose }: ItemModalProps) => {
         expiry_date: formatDate(item.expiry_date),
         unit: item.unit || 'pcs',
         purchase_date: formatDate(item.purchase_date),
-        min_stock_level: item.min_stock_level ? item.min_stock_level.toString() : '',
+        min_stock_level: item.min_stock_level !== null && item.min_stock_level !== undefined ? item.min_stock_level.toString() : '',
         storage_location: item.storage_location || '',
+        cost_per_unit: item.cost_per_unit !== null && item.cost_per_unit !== undefined ? item.cost_per_unit.toString() : '',
       });
     }
   }, [item]);
@@ -73,9 +75,20 @@ export const ItemModal = ({ item, onSave, onClose }: ItemModalProps) => {
     const quantityVal = parseInt(formData.quantity, 10);
     const dailyUsageVal = parseFloat(formData.daily_usage);
 
-    // Validate Quantity and Daily Usage are positive
-    if (Number.isNaN(quantityVal) || quantityVal <= 0) {
-      setError('Quantity must be a positive number greater than 0.');
+    // A brand-new item must start with actual stock to track. An existing
+    // item, though, can legitimately be edited down to 0 (e.g. fixing its
+    // name or storage location on something you've run out of) — the
+    // dedicated Consume flow is the *normal* way to reach 0, but this isn't
+    // the only valid one, and blocking it here would make an out-of-stock
+    // item's other fields permanently uneditable without also re-stocking it.
+    if (!item) {
+      if (Number.isNaN(quantityVal) || quantityVal <= 0) {
+        setError('Quantity must be a positive number greater than 0.');
+        setIsLoading(false);
+        return;
+      }
+    } else if (Number.isNaN(quantityVal) || quantityVal < 0) {
+      setError('Quantity cannot be negative.');
       setIsLoading(false);
       return;
     }
@@ -97,6 +110,16 @@ export const ItemModal = ({ item, onSave, onClose }: ItemModalProps) => {
       }
       if (minStockVal > quantityVal) {
         setError('Minimum Stock Level cannot exceed Quantity.');
+        setIsLoading(false);
+        return;
+      }
+    }
+
+    let costPerUnitVal: number | null = null;
+    if (formData.cost_per_unit !== '') {
+      costPerUnitVal = parseFloat(formData.cost_per_unit);
+      if (!Number.isFinite(costPerUnitVal) || costPerUnitVal < 0) {
+        setError('Cost per Unit must be a non-negative number.');
         setIsLoading(false);
         return;
       }
@@ -142,6 +165,7 @@ export const ItemModal = ({ item, onSave, onClose }: ItemModalProps) => {
         purchase_date: formData.purchase_date || null,
         min_stock_level: minStockVal,
         storage_location: formData.storage_location || null,
+        cost_per_unit: costPerUnitVal,
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to save item');
@@ -240,7 +264,7 @@ export const ItemModal = ({ item, onSave, onClose }: ItemModalProps) => {
                 onChange={(e) => setFormData({ ...formData, quantity: e.target.value })}
                 placeholder="e.g., 5"
                 className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent outline-none"
-                min="1"
+                min={item ? '0' : '1'}
                 required
               />
             </div>
@@ -279,16 +303,31 @@ export const ItemModal = ({ item, onSave, onClose }: ItemModalProps) => {
 
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-2">
-                Storage Location
+                Cost per {formData.unit} (₹)
               </label>
               <input
-                type="text"
-                value={formData.storage_location}
-                onChange={(e) => setFormData({ ...formData, storage_location: e.target.value })}
-                placeholder="e.g., Pantry Shelf A"
+                type="number"
+                step="0.01"
+                value={formData.cost_per_unit}
+                onChange={(e) => setFormData({ ...formData, cost_per_unit: e.target.value })}
+                placeholder="e.g., 45.00"
                 className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent outline-none"
+                min="0"
               />
             </div>
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">
+              Storage Location
+            </label>
+            <input
+              type="text"
+              value={formData.storage_location}
+              onChange={(e) => setFormData({ ...formData, storage_location: e.target.value })}
+              placeholder="e.g., Pantry Shelf A"
+              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent outline-none"
+            />
           </div>
 
           <div className="grid grid-cols-2 gap-4">

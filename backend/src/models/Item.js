@@ -47,6 +47,11 @@ const itemSchema = new mongoose.Schema(
       type: Number,
       default: null,
     },
+    cost_per_unit: {
+      type: Number,
+      default: null,
+      min: 0,
+    },
     storage_location: {
       type: String,
       default: null,

@@ -4,7 +4,6 @@ from fastapi import FastAPI
 from pydantic import BaseModel
 import pandas as pd
 import numpy as np
-from sklearn.linear_model import LinearRegression
 from sklearn.tree import DecisionTreeClassifier, DecisionTreeRegressor
 import os
 
@@ -171,19 +170,14 @@ def predict(request: PredictionRequest):
                 pred_val = demand_models[item_key].predict(pred_df)[0]
                 demand_forecast.append(max(0.1, float(np.round(pred_val, 2))))
         else:
-            # Fallback to simulated Linear Regression
-            np.random.seed(hash(item.id) % 1000)
-            history_days = 14
-            X_hist = np.arange(history_days).reshape(-1, 1)
-            y_hist = np.random.normal(loc=item.daily_usage, scale=max(0.1, item.daily_usage * 0.15), size=history_days)
-            y_hist = np.maximum(0.1, y_hist)
-            
-            lr_model = LinearRegression()
-            lr_model.fit(X_hist, y_hist)
-            
-            X_pred = np.arange(history_days, history_days + 7).reshape(-1, 1)
-            y_pred = lr_model.predict(X_pred)
-            demand_forecast = [max(0.1, float(np.round(val, 2))) for val in y_pred]
+            # No trained model exists for this item name (not enough rows in
+            # the training CSV). There's no real consumption history to fit a
+            # regression on, so rather than fabricating one from random noise
+            # (which produced a spurious "trend" with no predictive basis and
+            # mutated numpy's global RNG state, corrupting concurrent
+            # requests), project the item's current daily_usage flat across
+            # the week -- an honest "best estimate available" forecast.
+            demand_forecast = [max(0.1, round(item.daily_usage, 2))] * 7
 
         # 2. Expiry Risk Classification
         days_to_expiry = get_days_to_expiry(item.expiry_date)

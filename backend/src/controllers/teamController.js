@@ -7,6 +7,26 @@ function isDbConnected() {
   return mongoose.connection.readyState === 1;
 }
 
+// A user who registered/logged in while the DB was down gets a token with a
+// synthetic id like "dev_1"/"dev_user_...", which is not a valid Mongo
+// ObjectId or household_id. If the DB comes back up during that token's
+// lifetime, any query built from req.user.householdId would throw a
+// Mongoose CastError (surfacing as an opaque 500). Mirrors the same guard
+// in inventoryController.js.
+function isDevModeId(id) {
+  return typeof id === 'string' && id.startsWith('dev_');
+}
+
+function rejectStaleDevSession(req, res) {
+  if (isDbConnected() && (isDevModeId(req.user.householdId) || isDevModeId(req.user.userId))) {
+    res.status(409).json({
+      error: 'Your session was created while offline. Please log in again.',
+    });
+    return true;
+  }
+  return false;
+}
+
 const ROLES = ['Admin', 'Manager', 'Staff', 'Viewer'];
 const MIN_PASSWORD_LENGTH = 8;
 
@@ -59,6 +79,8 @@ function isValidPassword(password) {
 
 export const getTeamMembers = async (req, res) => {
   try {
+    if (rejectStaleDevSession(req, res)) return;
+
     const householdId = req.user.householdId;
 
     if (!isDbConnected()) {
@@ -86,6 +108,8 @@ export const getTeamMembers = async (req, res) => {
 
 export const createTeamMember = async (req, res) => {
   try {
+    if (rejectStaleDevSession(req, res)) return;
+
     const { name, email, password, role } = req.body;
     const householdId = req.user.householdId;
 
@@ -164,6 +188,8 @@ export const createTeamMember = async (req, res) => {
 
 export const updateTeamMember = async (req, res) => {
   try {
+    if (rejectStaleDevSession(req, res)) return;
+
     const { name, email, password, avatarUrl, role, isActive } = req.body;
     const memberId = req.params.id;
     const householdId = req.user.householdId;
@@ -337,6 +363,8 @@ export const updateTeamMember = async (req, res) => {
 
 export const deleteTeamMember = async (req, res) => {
   try {
+    if (rejectStaleDevSession(req, res)) return;
+
     const memberId = req.params.id;
     const householdId = req.user.householdId;
 

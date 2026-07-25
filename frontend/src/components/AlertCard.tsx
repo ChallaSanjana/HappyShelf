@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { InventoryItem } from '../services/api';
 import { AlertTriangle, Calendar } from 'lucide-react';
 import { formatExpiryLabel } from '../utils/expiry';
@@ -9,6 +10,7 @@ interface AlertCardProps {
 }
 
 export const AlertCard = ({ title, items, type }: AlertCardProps) => {
+  const [expanded, setExpanded] = useState(false);
   const getItemDescription = (item: InventoryItem) => {
     if (type === 'stock') {
       if ((item.quantity ?? 0) <= 0) return 'Out of stock';
@@ -33,7 +35,7 @@ export const AlertCard = ({ title, items, type }: AlertCardProps) => {
         <h3 className="font-semibold text-gray-800">{title}</h3>
       </div>
       <div className="space-y-3">
-        {items.slice(0, 5).map((item) => (
+        {(expanded ? items : items.slice(0, 5)).map((item) => (
           <div key={item.id} className="flex justify-between items-center">
             <div>
               <p className="font-medium text-gray-800">{item.name}</p>
@@ -43,9 +45,13 @@ export const AlertCard = ({ title, items, type }: AlertCardProps) => {
           </div>
         ))}
         {items.length > 5 && (
-          <p className="text-sm text-gray-600 pt-2">
-            +{items.length - 5} more item{items.length - 5 !== 1 ? 's' : ''}
-          </p>
+          <button
+            type="button"
+            onClick={() => setExpanded((prev) => !prev)}
+            className="text-sm text-gray-600 pt-2 hover:underline hover:text-gray-800"
+          >
+            {expanded ? 'Show less' : `+${items.length - 5} more item${items.length - 5 !== 1 ? 's' : ''}`}
+          </button>
         )}
       </div>
     </div>

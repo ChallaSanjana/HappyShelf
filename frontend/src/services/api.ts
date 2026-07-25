@@ -12,6 +12,7 @@ export interface InventoryItem {
   purchase_date?: string | null;
   min_stock_level?: number | null;
   storage_location?: string | null;
+  cost_per_unit?: number | null;
   created_at: string;
   updated_at: string;
 }
@@ -25,6 +26,30 @@ export interface Stats {
   carbonReduced: number;
 }
 
+export type StockStatusFilter = 'out' | 'low' | 'healthy';
+export type ExpiryStatusFilter = 'expired' | 'expiring_soon' | 'healthy' | 'none';
+export type ItemSortField = 'name' | 'quantity' | 'price' | 'totalValue' | 'expiryDate';
+export type SortOrder = 'asc' | 'desc';
+
+export interface ItemSearchParams {
+  search?: string;
+  category?: string;
+  stockStatus?: StockStatusFilter;
+  expiryStatus?: ExpiryStatusFilter;
+  sortBy?: ItemSortField;
+  sortOrder?: SortOrder;
+  page?: number;
+  limit?: number;
+}
+
+export interface ItemSearchResult {
+  items: InventoryItem[];
+  total: number;
+  page: number;
+  limit: number;
+  totalPages: number;
+}
+
 export interface ReorderHistoryEntry {
   id: string;
   householdId: string;
@@ -35,8 +60,22 @@ export interface ReorderHistoryEntry {
   newQuantity: number;
   unit: string;
   reorderedBy: string;
-  created_at: string;
-  updated_at?: string;
+  createdAt: string;
+  updatedAt?: string;
+}
+
+export interface ConsumptionHistoryEntry {
+  id: string;
+  householdId: string;
+  itemId: string;
+  itemName: string;
+  category: string;
+  quantityConsumed: number;
+  remainingQuantity: number;
+  unit: string;
+  consumedBy: string;
+  createdAt: string;
+  updatedAt?: string;
 }
 
 const getAuthHeaders = () => {
@@ -107,6 +146,17 @@ export const inventoryApi = {
     return { item: data.item, history: data.history };
   },
 
+  consumeItem: async (id: string, quantity: number): Promise<{ item: InventoryItem; history: ConsumptionHistoryEntry }> => {
+    const response = await fetch(`${API_URL}/inventory/items/${id}/consume`, {
+      method: 'PATCH',
+      headers: getAuthHeaders(),
+      body: JSON.stringify({ quantity }),
+    });
+    if (!response.ok) throw new Error(await parseErrorMessage(response, 'Failed to consume item'));
+    const data = await response.json();
+    return { item: data.item, history: data.history };
+  },
+
   getReorderHistory: async (): Promise<ReorderHistoryEntry[]> => {
     const response = await fetch(`${API_URL}/inventory/reorder-history`, {
       headers: getAuthHeaders(),
@@ -114,6 +164,33 @@ export const inventoryApi = {
     if (!response.ok) throw new Error(await parseErrorMessage(response, 'Failed to fetch reorder history'));
     const data = await response.json();
     return data.history;
+  },
+
+  getConsumptionHistory: async (): Promise<ConsumptionHistoryEntry[]> => {
+    const response = await fetch(`${API_URL}/inventory/consumption-history`, {
+      headers: getAuthHeaders(),
+    });
+    if (!response.ok) throw new Error(await parseErrorMessage(response, 'Failed to fetch consumption history'));
+    const data = await response.json();
+    return data.history;
+  },
+
+  searchItems: async (params: ItemSearchParams): Promise<ItemSearchResult> => {
+    const query = new URLSearchParams();
+    if (params.search) query.set('search', params.search);
+    if (params.category) query.set('category', params.category);
+    if (params.stockStatus) query.set('stockStatus', params.stockStatus);
+    if (params.expiryStatus) query.set('expiryStatus', params.expiryStatus);
+    if (params.sortBy) query.set('sortBy', params.sortBy);
+    if (params.sortOrder) query.set('sortOrder', params.sortOrder);
+    query.set('page', String(params.page ?? 1));
+    query.set('limit', String(params.limit ?? 10));
+
+    const response = await fetch(`${API_URL}/inventory/items?${query.toString()}`, {
+      headers: getAuthHeaders(),
+    });
+    if (!response.ok) throw new Error(await parseErrorMessage(response, 'Failed to search items'));
+    return response.json();
   },
 
   getStats: async (): Promise<Stats> => {

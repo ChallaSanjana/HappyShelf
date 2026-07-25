@@ -7,6 +7,26 @@ function isDbConnected() {
     return mongoose.connection.readyState === 1;
 }
 
+// A user who registered/logged in while the DB was down gets a token with a
+// synthetic id like "dev_1"/"dev_user_...", which is not a valid Mongo
+// ObjectId or household_id. If the DB comes back up during that token's
+// lifetime, any query built from req.user.householdId would throw a
+// Mongoose CastError (surfacing as an opaque 500). Mirrors the same guard
+// in inventoryController.js.
+function isDevModeId(id) {
+    return typeof id === 'string' && id.startsWith('dev_');
+}
+
+function rejectStaleDevSession(req, res) {
+    if (isDbConnected() && (isDevModeId(req.user.householdId) || isDevModeId(req.user.userId))) {
+        res.status(409).json({
+            error: 'Your session was created while offline. Please log in again.',
+        });
+        return true;
+    }
+    return false;
+}
+
 // In-memory storage fallback for development when MongoDB is unavailable.
 // Keyed by householdId -> plans[], mirroring the pattern used elsewhere
 // (devUsers in authController.js, devInventory in inventoryController.js).
@@ -80,6 +100,8 @@ function buildTasksFromItems(items) {
 
 export const getActionPlans = async (req, res) => {
     try {
+        if (rejectStaleDevSession(req, res)) return;
+
         const householdId = req.user.householdId;
 
         if (!isDbConnected()) {
@@ -99,6 +121,8 @@ export const getActionPlans = async (req, res) => {
 
 export const createActionPlan = async (req, res) => {
     try {
+        if (rejectStaleDevSession(req, res)) return;
+
         const { title } = req.body;
         const householdId = req.user.householdId;
         const planTitle = (typeof title === 'string' && title.trim()) || `Action Plan — ${new Date().toLocaleDateString()}`;
@@ -156,6 +180,8 @@ export const createActionPlan = async (req, res) => {
 // supports — it's a checklist, not a general task editor.
 export const updateActionPlanTask = async (req, res) => {
     try {
+        if (rejectStaleDevSession(req, res)) return;
+
         const { planId, taskId } = req.params;
         const { done } = req.body;
         const householdId = req.user.householdId;
@@ -202,6 +228,8 @@ export const updateActionPlanTask = async (req, res) => {
 
 export const deleteActionPlan = async (req, res) => {
     try {
+        if (rejectStaleDevSession(req, res)) return;
+
         const { planId } = req.params;
         const householdId = req.user.householdId;
 

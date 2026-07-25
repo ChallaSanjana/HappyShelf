@@ -44,14 +44,19 @@ export const calculateMetrics = (items: InventoryItem[]): CalculatedMetrics => {
   }, {} as Record<string, number>);
 
   // Calculate well-managed items (not expired, not expiring soon, AND not low stock)
-  const wellManagedItems = items.filter((item) => {
+  const wellManagedItemsList = items.filter((item) => {
     if (isExpired(item.expiry_date)) return false;
     const daysLeft = item.daily_usage > 0 ? item.quantity / item.daily_usage : 999;
     return !isExpiredOrExpiringSoon(item.expiry_date, 7) && daysLeft >= 3;
-  }).length;
+  });
 
-  const predictedSavings = totalItems > 0 ? Math.round(wellManagedItems * 5) : 0;
-  const carbonReduced = totalItems > 0 ? Math.round(wellManagedItems * 0.5 * 100) / 100 : 0;
+  // Mirrors the backend's getStats: rupee value of stock currently safe from
+  // waste (quantity * cost_per_unit), summed only over well-managed items
+  // that actually have a cost entered. No fabricated per-category pricing.
+  const predictedSavings = Math.round(
+    wellManagedItemsList.reduce((sum, item) => sum + (item.quantity || 0) * (item.cost_per_unit || 0), 0)
+  );
+  const carbonReduced = totalItems > 0 ? Math.round(wellManagedItemsList.length * 0.5 * 100) / 100 : 0;
 
   return {
     totalItems,

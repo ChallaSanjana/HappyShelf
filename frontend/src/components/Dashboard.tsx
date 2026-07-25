@@ -1,9 +1,9 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useAuth } from '../contexts/AuthContext';
-import { inventoryApi, teamApi, TeamMember, InventoryItem, Stats, PredictionsResponse, actionPlanApi, ActionPlan, ReorderHistoryEntry } from '../services/api';
+import { inventoryApi, teamApi, TeamMember, InventoryItem, Stats, PredictionsResponse, actionPlanApi, ActionPlan, ReorderHistoryEntry, ConsumptionHistoryEntry } from '../services/api';
 import { calculateMetrics } from '../utils/metricsCalculator';
 import { StatCard } from './StatCard';
-import { InventoryTable } from './InventoryTable';
+import { InventoryExplorer } from './InventoryExplorer';
 import { ItemModal } from './ItemModal';
 import { AlertCard } from './AlertCard';
 import { ForecastChart } from './ForecastChart';
@@ -11,14 +11,16 @@ import { RecentActivity } from './RecentActivity';
 import Sidebar from './Sidebar';
 import AddMemberForm from './AddMemberForm';
 import { ReorderModal } from './ReorderModal';
+import { ConsumeModal } from './ConsumeModal';
 import { isExpiredOrExpiringSoon } from '../utils/expiry';
+import { generateInventoryReportPdf } from '../utils/reportGenerator';
 // stats components
 import UsageTrends from './stats/UsageTrends';
 import StockLevelsChart from './stats/StockLevelsChart';
 import CategoryInsights from './stats/CategoryInsights';
 import ExpiryAnalysis from './stats/ExpiryAnalysis';
 import CostAnalytics from './stats/CostAnalytics';
-import { LogOut, Plus, Package, AlertTriangle, Leaf, Download, RefreshCw, Menu } from 'lucide-react';
+import { LogOut, Plus, Package, AlertTriangle, Leaf, Download, RefreshCw, Menu, FileText } from 'lucide-react';
 // sustainability
 import FoodWasteTracker from './sustainability/FoodWasteTracker';
 import CO2Impact from './sustainability/CO2Impact';
@@ -45,7 +47,9 @@ export const Dashboard = () => {
   const [actionPlans, setActionPlans] = useState<ActionPlan[]>([]);
   const [isCreatingActionPlan, setIsCreatingActionPlan] = useState(false);
   const [reorderHistory, setReorderHistory] = useState<ReorderHistoryEntry[]>([]);
+  const [consumptionHistory, setConsumptionHistory] = useState<ConsumptionHistoryEntry[]>([]);
   const [reorderingItem, setReorderingItem] = useState<InventoryItem | null>(null);
+  const [consumingItem, setConsumingItem] = useState<InventoryItem | null>(null);
   const [settingsState, setSettingsState] = useState({
     profileName: user?.name || '',
     emailNotifications: true,
@@ -235,31 +239,50 @@ export const Dashboard = () => {
     setStats(calculatedStats as Stats);
   }, [items]);
 
+  // Guards against overlapping loadData() calls (e.g. reordering item A, then
+  // reordering item B before A's background refresh resolves) applying their
+  // results out of order — a slower, older call would otherwise overwrite
+  // the newer call's fresher state and briefly flash stale data. Only the
+  // most recently *started* call is allowed to commit its results.
+  const loadDataSeqRef = useRef(0);
+
   const loadData = async () => {
+    const seq = ++loadDataSeqRef.current;
+    const isCurrent = () => seq === loadDataSeqRef.current;
     try {
       const itemsData = await inventoryApi.getItems();
+      if (!isCurrent()) return;
       setItems(itemsData);
 
       try {
         const predictionsData = await inventoryApi.getPredictions();
-        setPredictions(predictionsData);
+        if (isCurrent()) setPredictions(predictionsData);
       } catch (predError) {
         console.warn('Failed to load ML predictions:', predError);
-        setPredictions(null);
+        if (isCurrent()) setPredictions(null);
       }
 
       try {
         const historyData = await inventoryApi.getReorderHistory();
-        setReorderHistory(historyData);
+        if (isCurrent()) setReorderHistory(historyData);
       } catch (histError) {
         console.warn('Failed to load reorder history:', histError);
+      }
+
+      try {
+        const consumptionData = await inventoryApi.getConsumptionHistory();
+        if (isCurrent()) setConsumptionHistory(consumptionData);
+      } catch (consumptionError) {
+        console.warn('Failed to load consumption history:', consumptionError);
       }
     } catch (error) {
       console.error('Failed to load data:', error);
     } finally {
-      setIsLoading(false);
-      setLastUpdated(new Date().toLocaleString());
-      setIsRefreshing(false);
+      if (isCurrent()) {
+        setIsLoading(false);
+        setLastUpdated(new Date().toLocaleString());
+        setIsRefreshing(false);
+      }
     }
   };
 
@@ -313,6 +336,25 @@ export const Dashboard = () => {
     loadData();
   };
 
+  const handleConsume = (item: InventoryItem) => {
+    setConsumingItem(item);
+  };
+
+  const handleConfirmConsume = async (quantity: number) => {
+    if (!consumingItem) return;
+    const { item: updatedItem, history: historyEntry } = await inventoryApi.consumeItem(consumingItem.id, quantity);
+
+    // Instant UI update — no need to wait for a full reload. This is what
+    // lets the Out of Stock badge/alerts/predictions light up immediately
+    // once quantity reaches 0, since they all derive from `items` state.
+    setItems((prev) => prev.map((it) => (it.id === updatedItem.id ? updatedItem : it)));
+    setConsumptionHistory((prev) => [historyEntry, ...prev].slice(0, 50));
+    setConsumingItem(null);
+
+    // Refresh predictions/stats in the background so forecasts reflect the new stock
+    loadData();
+  };
+
   const handleSaveItem = async (itemData: Partial<InventoryItem>) => {
     try {
       if (editingItem) {
@@ -341,6 +383,7 @@ export const Dashboard = () => {
       'Unit',
       'Daily Usage',
       'Min Stock Level',
+      'Cost Per Unit',
       'Expiry Date',
       'Purchase Date',
       'Storage Location'
@@ -364,6 +407,7 @@ export const Dashboard = () => {
         escapeCSV(item.unit),
         escapeCSV(item.daily_usage),
         escapeCSV(item.min_stock_level),
+        escapeCSV(item.cost_per_unit),
         escapeCSV(item.expiry_date),
         escapeCSV(item.purchase_date),
         escapeCSV(item.storage_location)
@@ -379,6 +423,14 @@ export const Dashboard = () => {
     link.click();
     document.body.removeChild(link);
     URL.revokeObjectURL(url);
+  };
+
+  const handleDownloadReport = () => {
+    if (!items || items.length === 0) {
+      alert('No inventory data available to generate a report');
+      return;
+    }
+    generateInventoryReportPdf({ items, stats, predictions, consumptionHistory, userName: user?.name });
   };
 
   // CSV/JSON import helpers
@@ -485,6 +537,47 @@ export const Dashboard = () => {
               typeof normalized.expirydate === 'string' ? normalized.expirydate :
                 typeof normalized['expiry date'] === 'string' ? (normalized['expiry date'] as string) : null;
 
+        const rowPurchaseDate =
+          typeof normalized.purchase_date === 'string' ? normalized.purchase_date :
+            typeof normalized.purchasedate === 'string' ? normalized.purchasedate :
+              typeof normalized['purchase date'] === 'string' ? (normalized['purchase date'] as string) : null;
+
+        const rowMinStockLevel =
+          normalized.min_stock_level ?? normalized.minstocklevel ?? normalized['min stock level'];
+
+        const rowCostPerUnit =
+          normalized.cost_per_unit ?? normalized.costperunit ?? normalized['cost per unit'] ?? normalized.cost;
+
+        const rowStorageLocation =
+          typeof normalized.storage_location === 'string' ? normalized.storage_location :
+            typeof normalized.storagelocation === 'string' ? normalized.storagelocation :
+              typeof normalized['storage location'] === 'string' ? (normalized['storage location'] as string) : null;
+
+        // Reject unparseable dates instead of letting `new Date(x)` silently
+        // produce NaN downstream — an item with a NaN days-to-expiry never
+        // matches any `<` comparison, so it would vanish from every expiry
+        // alert/waste-tracking view without any error ever surfacing.
+        if (rowExpiry && Number.isNaN(new Date(rowExpiry).getTime())) {
+          errors.push(`${rowName || 'row'}: unrecognized expiry date "${rowExpiry}"; expected YYYY-MM-DD. Item skipped.`);
+          continue;
+        }
+        if (rowPurchaseDate && Number.isNaN(new Date(rowPurchaseDate).getTime())) {
+          errors.push(`${rowName || 'row'}: unrecognized purchase date "${rowPurchaseDate}"; expected YYYY-MM-DD. Item skipped.`);
+          continue;
+        }
+
+        let minStockLevel: number | null = null;
+        if (rowMinStockLevel !== undefined && rowMinStockLevel !== null && String(rowMinStockLevel).trim() !== '') {
+          const parsedMinStock = Number(rowMinStockLevel);
+          if (!Number.isNaN(parsedMinStock)) minStockLevel = parsedMinStock;
+        }
+
+        let costPerUnit: number | null = null;
+        if (rowCostPerUnit !== undefined && rowCostPerUnit !== null && String(rowCostPerUnit).trim() !== '') {
+          const parsedCost = Number(rowCostPerUnit);
+          if (!Number.isNaN(parsedCost)) costPerUnit = parsedCost;
+        }
+
         const payload: Omit<InventoryItem, 'id' | 'user_id' | 'created_at' | 'updated_at'> = {
           name: rowName,
           category: rowCategory,
@@ -492,6 +585,10 @@ export const Dashboard = () => {
           daily_usage: rowUsage,
           expiry_date: rowExpiry || null,
           unit: (normalized.unit as InventoryItem['unit']) || 'pcs',
+          purchase_date: rowPurchaseDate || null,
+          min_stock_level: minStockLevel,
+          storage_location: rowStorageLocation || null,
+          cost_per_unit: costPerUnit,
         };
 
         if (!payload.name) {
@@ -617,11 +714,11 @@ export const Dashboard = () => {
                     color="orange"
                   />
                   <StatCard
-                    title="Predicted Savings"
+                    title="Protected Inventory Value"
                     value={stats?.predictedSavings || 0}
                     icon={<Download className="w-6 h-6" />}
                     color="green"
-                    prefix="$"
+                    prefix="₹"
                   />
                   <StatCard
                     title="Carbon Reduced"
@@ -649,6 +746,13 @@ export const Dashboard = () => {
                     >
                       <Download className="w-4 h-4" />
                       Export
+                    </button>
+                    <button
+                      onClick={handleDownloadReport}
+                      className="flex items-center gap-2 px-3 py-2 bg-white border border-gray-200 rounded-lg shadow-sm hover:bg-gray-50"
+                    >
+                      <FileText className="w-4 h-4" />
+                      Download Inventory Report
                     </button>
                     <button
                       onClick={handleAddItem}
@@ -688,7 +792,7 @@ export const Dashboard = () => {
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-4">
                   <StatCard title="Total Items" value={stats?.totalItems || 0} icon={<Package className="w-6 h-6" />} color="green" />
                   <StatCard title="Critical Stock" value={stats?.lowStockItems || 0} icon={<AlertTriangle className="w-6 h-6" />} color="orange" />
-                  <StatCard title="Predicted Savings" value={stats?.predictedSavings || 0} icon={<Download className="w-6 h-6" />} color="green" prefix="$" />
+                  <StatCard title="Protected Inventory Value" value={stats?.predictedSavings || 0} icon={<Download className="w-6 h-6" />} color="green" prefix="₹" />
                   <StatCard title="Carbon Reduced" value={stats?.carbonReduced || 0} icon={<Leaf className="w-6 h-6" />} color="green" suffix="kg CO₂" />
                 </div>
               </div>
@@ -937,11 +1041,12 @@ export const Dashboard = () => {
                   </div>
                 )}
               </div>
-              <InventoryTable
-                items={items}
+              <InventoryExplorer
+                allItems={items}
                 onEdit={handleEditItem}
                 onDelete={handleDeleteItem}
                 onReorder={handleReorder}
+                onConsume={handleConsume}
                 readOnly={role === 'Viewer'}
               />
 
@@ -963,7 +1068,36 @@ export const Dashboard = () => {
                             New total: {entry.newQuantity} {entry.unit}
                           </p>
                           <p className="text-xs text-gray-400">
-                            {new Date(entry.created_at).toLocaleString()}
+                            {new Date(entry.createdAt).toLocaleString()}
+                          </p>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {consumptionHistory.length > 0 && (
+                <div className="p-6 border-t border-gray-200">
+                  <h3 className="text-lg font-semibold text-gray-800 mb-4">Recent Consumption</h3>
+                  <div className="space-y-3">
+                    {consumptionHistory.slice(0, 8).map((entry) => (
+                      <div key={entry.id} className="flex items-center justify-between border-b border-gray-100 pb-3 last:border-b-0 last:pb-0">
+                        <div>
+                          <p className="font-medium text-gray-800">{entry.itemName}</p>
+                          <p className="text-sm text-gray-500">{entry.category}</p>
+                        </div>
+                        <div className="text-right">
+                          <p className="text-sm font-medium text-orange-600">
+                            -{entry.quantityConsumed} {entry.unit}
+                          </p>
+                          <p className={`text-xs ${entry.remainingQuantity === 0 ? 'text-red-600 font-medium' : 'text-gray-500'}`}>
+                            {entry.remainingQuantity === 0
+                              ? 'Out of stock'
+                              : `Remaining: ${entry.remainingQuantity} ${entry.unit}`}
+                          </p>
+                          <p className="text-xs text-gray-400">
+                            {new Date(entry.createdAt).toLocaleString()}
                           </p>
                         </div>
                       </div>
@@ -991,21 +1125,32 @@ export const Dashboard = () => {
               </div>
 
               <div className="bg-white rounded-b-xl shadow-sm border border-t-0 border-gray-200 p-6">
-                {(getLowStockItems().length > 0 || getExpiringSoonItems().length > 0 || getOutOfStockItems().length > 0) ? (
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                    {getOutOfStockItems().length > 0 && (
-                      <AlertCard title="Out of Stock" items={getOutOfStockItems()} type="stock" />
-                    )}
-                    {getLowStockItems().length > 0 && (
-                      <AlertCard title="Low Stock Items" items={getLowStockItems()} type="stock" />
-                    )}
-                    {getExpiringSoonItems().length > 0 && (
-                      <AlertCard title="Expiring Soon" items={getExpiringSoonItems()} type="expiry" />
-                    )}
-                  </div>
-                ) : (
-                  <div className="text-gray-600">No active alerts at the moment.</div>
-                )}
+                {(() => {
+                  const outOfStockItems = getOutOfStockItems();
+                  // getLowStockItems() includes quantity === 0 items (daysLeft
+                  // is 0, which is < 3), so without this filter an out-of-stock
+                  // item would render in both the "Out of Stock" and "Low Stock
+                  // Items" cards at once.
+                  const lowStockOnlyItems = getLowStockItems().filter((item) => (item.quantity ?? 0) > 0);
+                  const expiringSoonItems = getExpiringSoonItems();
+                  const hasAlerts = outOfStockItems.length > 0 || lowStockOnlyItems.length > 0 || expiringSoonItems.length > 0;
+
+                  return hasAlerts ? (
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                      {outOfStockItems.length > 0 && (
+                        <AlertCard title="Out of Stock" items={outOfStockItems} type="stock" />
+                      )}
+                      {lowStockOnlyItems.length > 0 && (
+                        <AlertCard title="Low Stock Items" items={lowStockOnlyItems} type="stock" />
+                      )}
+                      {expiringSoonItems.length > 0 && (
+                        <AlertCard title="Expiring Soon" items={expiringSoonItems} type="expiry" />
+                      )}
+                    </div>
+                  ) : (
+                    <div className="text-gray-600">No active alerts at the moment.</div>
+                  );
+                })()}
               </div>
             </div>
           )}
@@ -1248,6 +1393,14 @@ export const Dashboard = () => {
           item={reorderingItem}
           onConfirm={handleConfirmReorder}
           onClose={() => setReorderingItem(null)}
+        />
+      )}
+
+      {consumingItem && (
+        <ConsumeModal
+          item={consumingItem}
+          onConfirm={handleConfirmConsume}
+          onClose={() => setConsumingItem(null)}
         />
       )}
     </div>

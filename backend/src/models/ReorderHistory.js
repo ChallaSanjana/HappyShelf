@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import { applyCommonHistoryFields } from '../utils/historyJson.js';
 
 // Records every completed reorder so the household can see a log of what
 // was restocked, when, and how much was added. Deliberately denormalized
@@ -53,21 +54,13 @@ const reorderHistorySchema = new mongoose.Schema(
 reorderHistorySchema.set('toJSON', {
     virtuals: true,
     transform: function (doc, ret) {
-        ret.id = ret._id.toString();
-        ret.householdId = ret.household_id.toString();
-        ret.itemId = ret.item_id;
-        ret.itemName = ret.item_name;
+        applyCommonHistoryFields(ret);
         ret.quantityAdded = ret.quantity_added;
         ret.newQuantity = ret.new_quantity;
         ret.reorderedBy = ret.reordered_by.toString();
-        delete ret._id;
-        delete ret.household_id;
-        delete ret.item_id;
-        delete ret.item_name;
         delete ret.quantity_added;
         delete ret.new_quantity;
         delete ret.reordered_by;
-        delete ret.__v;
         return ret;
     },
 });

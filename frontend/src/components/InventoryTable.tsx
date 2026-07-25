@@ -25,13 +25,14 @@ interface InventoryTableProps {
   onEdit: (item: InventoryItem) => void;
   onDelete: (id: string) => void;
   onReorder?: (item: InventoryItem) => void;
+  onConsume?: (item: InventoryItem) => void;
   readOnly?: boolean;
 }
 
 type StockStatus = 'out' | 'critical' | 'warning' | 'good';
 type ExpiryStatus = 'expired' | 'critical' | 'warning' | 'good' | 'none';
 
-export const InventoryTable = ({ items, onEdit, onDelete, onReorder, readOnly = false }: InventoryTableProps) => {
+export const InventoryTable = ({ items, onEdit, onDelete, onReorder, onConsume, readOnly = false }: InventoryTableProps) => {
   const calculateDaysLeft = (item: InventoryItem) => {
     if (item.daily_usage <= 0) return 'N/A';
     return (item.quantity / item.daily_usage).toFixed(1);
@@ -68,10 +69,16 @@ export const InventoryTable = ({ items, onEdit, onDelete, onReorder, readOnly = 
     good: 'bg-green-100 text-green-700',
   };
 
+  // Labeled to match the dashboard/alerts terminology (Dashboard.tsx's
+  // getLowStockItems() and the backend's getStats both flag "Low Stock" at
+  // the same daysLeft < 3 threshold as this "critical" tier) — previously
+  // this tier was labeled "Critical" while the *3-7 day* tier was labeled
+  // "Low", so the badge a user would look for to match the "Low Stock
+  // Items" alert wasn't the one that actually corresponded to it.
   const stockLabels: Record<StockStatus, string> = {
     out: 'Out of stock',
-    critical: 'Critical',
-    warning: 'Low',
+    critical: 'Low Stock',
+    warning: 'Watch',
     good: 'Good',
   };
 
@@ -106,6 +113,7 @@ export const InventoryTable = ({ items, onEdit, onDelete, onReorder, readOnly = 
             <th className="px-6 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">Category</th>
             <th className="px-6 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">Quantity</th>
             <th className="px-6 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">Daily Usage</th>
+            <th className="px-6 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">Cost/Unit</th>
             <th className="px-6 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">Days Left</th>
             <th className="px-6 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">Expiry Date</th>
             <th className="px-6 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">Stock Status</th>
@@ -132,6 +140,11 @@ export const InventoryTable = ({ items, onEdit, onDelete, onReorder, readOnly = 
                 </td>
                 <td className="px-6 py-4 whitespace-nowrap">
                   <div className="text-sm text-gray-900">{item.daily_usage}</div>
+                </td>
+                <td className="px-6 py-4 whitespace-nowrap">
+                  <div className="text-sm text-gray-900">
+                    {item.cost_per_unit !== null && item.cost_per_unit !== undefined ? `₹${item.cost_per_unit}` : '—'}
+                  </div>
                 </td>
                 <td className="px-6 py-4 whitespace-nowrap">
                   <div className="text-sm text-gray-900">{calculateDaysLeft(item)}</div>
@@ -165,6 +178,13 @@ export const InventoryTable = ({ items, onEdit, onDelete, onReorder, readOnly = 
                       className="text-blue-600 hover:text-blue-900 mr-3"
                     >
                       Reorder
+                    </button>
+                    <button
+                      onClick={() => onConsume ? onConsume(item) : alert('Consume not available')}
+                      disabled={(item.quantity ?? 0) <= 0}
+                      className="text-orange-600 hover:text-orange-900 mr-3 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:text-orange-600"
+                    >
+                      Consume
                     </button>
                     <button onClick={() => onDelete(item.id)} className="text-red-600 hover:text-red-900">
                       <Trash2 className="w-4 h-4" />
