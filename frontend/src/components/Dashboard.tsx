@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useAuth } from '../contexts/AuthContext';
-import { inventoryApi, teamApi, TeamMember, InventoryItem, Stats, PredictionsResponse } from '../services/api';
+import { inventoryApi, teamApi, TeamMember, InventoryItem, Stats, PredictionsResponse, actionPlanApi, ActionPlan } from '../services/api';
 import { calculateMetrics } from '../utils/metricsCalculator';
 import { StatCard } from './StatCard';
 import { InventoryTable } from './InventoryTable';
@@ -42,6 +42,8 @@ export const Dashboard = () => {
   const [isLoading, setIsLoading] = useState(true);
   const [view, setView] = useState<string>('dashboard');
   const [teamMembers, setTeamMembers] = useState<TeamMember[]>([]);
+  const [actionPlans, setActionPlans] = useState<ActionPlan[]>([]);
+  const [isCreatingActionPlan, setIsCreatingActionPlan] = useState(false);
 
   const [settingsState, setSettingsState] = useState({
     profileName: user?.name || '',
@@ -154,11 +156,65 @@ export const Dashboard = () => {
     }
   }, [user, role]);
 
+  const fetchActionPlans = useCallback(async () => {
+    if (!user) return;
+    try {
+      const plans = await actionPlanApi.getActionPlans();
+      setActionPlans(plans);
+    } catch (err) {
+      console.error('Failed to load action plans:', err);
+    }
+  }, [user]);
+
+  const handleCreateActionPlan = async () => {
+    setIsCreatingActionPlan(true);
+    try {
+      await actionPlanApi.createActionPlan();
+      await fetchActionPlans();
+    } catch (err) {
+      const error = err instanceof Error ? err : new Error(String(err));
+      alert(error.message || 'Failed to create action plan');
+    } finally {
+      setIsCreatingActionPlan(false);
+    }
+  };
+
+  const handleToggleActionPlanTask = async (planId: string, taskId: string, done: boolean) => {
+    // Optimistic update so checking a box feels instant; re-synced from the
+    // server response (or rolled back via fetchActionPlans on failure).
+    setActionPlans((prev) =>
+      prev.map((p) =>
+        p.id !== planId ? p : { ...p, tasks: p.tasks.map((t) => (t.id === taskId ? { ...t, done } : t)) }
+      )
+    );
+    try {
+      await actionPlanApi.updateTaskStatus(planId, taskId, done);
+    } catch (err) {
+      const error = err instanceof Error ? err : new Error(String(err));
+      alert(error.message || 'Failed to update task');
+      fetchActionPlans();
+    }
+  };
+
+  const handleDeleteActionPlan = async (planId: string) => {
+    if (!confirm('Delete this action plan?')) return;
+    try {
+      await actionPlanApi.deleteActionPlan(planId);
+      await fetchActionPlans();
+    } catch (err) {
+      const error = err instanceof Error ? err : new Error(String(err));
+      alert(error.message || 'Failed to delete action plan');
+    }
+  };
+
   useEffect(() => {
     if (view === 'team') {
       fetchTeamMembers();
     }
-  }, [view, fetchTeamMembers]);
+    if (view === 'sustainability') {
+      fetchActionPlans();
+    }
+  }, [view, fetchTeamMembers, fetchActionPlans]);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [lastUpdated, setLastUpdated] = useState<string | null>(null);
   // Sidebar.tsx already implements the slide-in/overlay behavior for mobile
@@ -233,33 +289,16 @@ export const Dashboard = () => {
   };
 
   const handleReorder = async (item: InventoryItem) => {
-    const qtyStr = prompt(`Enter reorder quantity for ${item.name}:`, '10');
-    if (!qtyStr) return;
-    const qty = Number(qtyStr);
-    if (Number.isNaN(qty) || qty <= 0) {
-      alert('Invalid quantity');
-      return;
+    if (!confirm(`Reorder ${item.name}? This will restock it to a healthy stock level.`)) return;
+    try {
+      await inventoryApi.reorderItem(item.id);
+      await loadData();
+      alert(`${item.name} has been reordered successfully.`);
+    } catch (error) {
+      console.error('Failed to reorder item:', error);
+      alert(error instanceof Error ? error.message : 'Failed to reorder item');
     }
-
-    // prefer a backend endpoint if available
-    const api = inventoryApi as unknown as Record<string, (arg: { itemId: string; quantity: number }) => Promise<void>>;
-    if (typeof api.createOrder === 'function') {
-      try {
-        await api.createOrder({ itemId: item.id, quantity: qty });
-        alert('Reorder request submitted');
-        return;
-      } catch (e) {
-        const error = e instanceof Error ? e : new Error(String(e));
-        console.error('Order API failed', error);
-        alert('Failed to submit reorder: ' + error.message);
-        return;
-      }
-    }
-
-    // fallback: create a simple note or show confirmation
-    alert(`Reorder requested for ${item.name} (qty: ${qty}). Connect a backend order API to automate this.`);
   };
-
   const handleSaveItem = async (itemData: Partial<InventoryItem>) => {
     try {
       if (editingItem) {
@@ -733,9 +772,68 @@ export const Dashboard = () => {
                     <li>Adjust reorder points for high-waste categories.</li>
                     <li>Enable alerts for items approaching expiry with promo suggestions.</li>
                   </ul>
-                  <div className="mt-4">
-                    <button className="px-3 py-2 bg-green-600 text-white rounded">Create Action Plan</button>
-                  </div>
+                  {role !== 'Viewer' && (
+                    <div className="mt-4">
+                      <button
+                        onClick={handleCreateActionPlan}
+                        disabled={isCreatingActionPlan}
+                        className="px-3 py-2 bg-green-600 text-white rounded hover:bg-green-700 disabled:opacity-50"
+                      >
+                        {isCreatingActionPlan ? 'Creating...' : 'Create Action Plan'}
+                      </button>
+                      <div className="text-xs text-gray-500 mt-2">
+                        Builds a checklist from items that are low/out of stock or expiring soon.
+                      </div>
+                    </div>
+                  )}
+
+                  {actionPlans.length > 0 && (
+                    <div className="mt-6 space-y-4">
+                      {actionPlans.map((plan) => {
+                        const doneCount = plan.tasks.filter((t) => t.done).length;
+                        return (
+                          <div key={plan.id} className="border border-gray-100 rounded-lg p-4">
+                            <div className="flex items-center justify-between mb-2">
+                              <div>
+                                <div className="font-medium text-gray-800">{plan.title}</div>
+                                <div className="text-xs text-gray-500">{doneCount}/{plan.tasks.length} done</div>
+                              </div>
+                              {role !== 'Viewer' && (
+                                <button
+                                  onClick={() => handleDeleteActionPlan(plan.id)}
+                                  className="text-sm text-red-600 hover:underline"
+                                >
+                                  Delete
+                                </button>
+                              )}
+                            </div>
+                            <ul className="space-y-2">
+                              {plan.tasks.map((task) => (
+                                <li key={task.id} className="flex items-start gap-2">
+                                  <input
+                                    type="checkbox"
+                                    checked={task.done}
+                                    disabled={role === 'Viewer'}
+                                    onChange={(e) => handleToggleActionPlanTask(plan.id, task.id, e.target.checked)}
+                                    className="mt-1"
+                                  />
+                                  <span className={`text-sm ${task.done ? 'line-through text-gray-400' : 'text-gray-700'}`}>
+                                    <span
+                                      className={`inline-block px-1.5 py-0.5 rounded text-xs mr-2 ${task.type === 'restock' ? 'bg-orange-100 text-orange-700' : 'bg-red-100 text-red-700'
+                                        }`}
+                                    >
+                                      {task.type === 'restock' ? 'Restock' : 'Use soon'}
+                                    </span>
+                                    {task.description}
+                                  </span>
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
               </div>
             </>

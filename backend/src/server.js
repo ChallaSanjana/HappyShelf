@@ -5,6 +5,7 @@ import connectDB from './config/database.js';
 import authRoutes from './routes/authRoutes.js';
 import inventoryRoutes from './routes/inventoryRoutes.js';
 import teamRoutes from './routes/teamRoutes.js';
+import actionPlanRoutes from './routes/actionPlanRoutes.js';
 
 dotenv.config();
 
@@ -55,6 +56,7 @@ app.use(express.json({ limit: '100kb' }));
 app.use('/api/auth', authRoutes);
 app.use('/api/inventory', inventoryRoutes);
 app.use('/api/team', teamRoutes);
+app.use('/api/action-plans', actionPlanRoutes);
 
 app.get('/api/health', (req, res) => {
   res.json({ status: 'OK', message: 'HappyShelf API is running' });

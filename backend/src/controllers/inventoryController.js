@@ -1,11 +1,14 @@
 import mongoose from 'mongoose';
 import Item from '../models/Item.js';
 
-// In-memory storage fallback for development when MongoDB is unavailable
-const devInventory = new Map(); // userId -> items[]
+// In-memory storage fallback for development when MongoDB is unavailable.
+// Exported so other controllers (actionPlanController) that need to read
+// the current household's items in dev mode share this same store instead
+// of maintaining a separate, out-of-sync copy.
+export const devInventory = new Map(); // userId -> items[]
 let nextItemId = 1;
 
-function getUserItems(userId) {
+export function getUserItems(userId) {
   if (!devInventory.has(userId)) {
     devInventory.set(userId, []);
   }
@@ -354,6 +357,62 @@ export const updateItem = async (req, res) => {
   }
 };
 
+// Bumps a low/out-of-stock item back up to a target quantity and stamps
+// purchase_date as today, standing in for placing an actual purchase order.
+// Target = max(min_stock_level, daily_usage * 14, 1) so it always restocks
+// to at least a two-week buffer, or the item's own configured minimum if
+// that's higher.
+function calculateReorderQuantity(item) {
+  const twoWeekBuffer = Math.ceil((item.daily_usage || 0) * 14);
+  const minStock = item.min_stock_level || 0;
+  return Math.max(minStock, twoWeekBuffer, 1);
+}
+
+export const reorderItem = async (req, res) => {
+  try {
+    if (rejectStaleDevSession(req, res)) return;
+
+    const { id } = req.params;
+
+    if (isDbConnected() && !isValidObjectId(id)) {
+      return res.status(400).json({ error: 'Invalid item id' });
+    }
+
+    const today = new Date().toISOString().split('T')[0];
+
+    if (!isDbConnected()) {
+      const items = getUserItems(req.user.householdId);
+      const item = items.find((it) => it.id === id);
+      if (!item) {
+        return res.status(404).json({ error: 'Item not found' });
+      }
+      const reorderQty = calculateReorderQuantity(item);
+      item.quantity = item.quantity + reorderQty;
+      item.purchase_date = today;
+      item.updated_at = new Date().toISOString();
+      return res.json({ message: 'Item reordered successfully (dev mode)', item });
+    }
+
+    const existingItem = await Item.findOne({ _id: id, user_id: req.user.householdId });
+    if (!existingItem) {
+      return res.status(404).json({ error: 'Item not found' });
+    }
+
+    const reorderQty = calculateReorderQuantity(existingItem);
+
+    const updatedItem = await Item.findOneAndUpdate(
+      { _id: id, user_id: req.user.householdId },
+      { quantity: existingItem.quantity + reorderQty, purchase_date: today },
+      { new: true }
+    );
+
+    res.json({ message: 'Item reordered successfully', item: updatedItem });
+  } catch (error) {
+    console.error('Reorder item error:', error);
+    res.status(500).json({ error: 'Failed to reorder item' });
+  }
+};
+
 export const deleteItem = async (req, res) => {
   try {
     if (rejectStaleDevSession(req, res)) return;
@@ -398,7 +457,6 @@ export const getStats = async (req, res) => {
     if (!isDbConnected()) {
       items = getUserItems(req.user.householdId);
     } else {
-      // Fetch all items for the user (metrics calculated on-the-fly, not stored in DB)
       items = await Item.find({ user_id: req.user.householdId });
     }
 
@@ -422,25 +480,16 @@ export const getStats = async (req, res) => {
       return acc;
     }, {});
 
-    // Calculate predicted savings: based on well-managed items
-    // Items not expiring soon and not low stock = prevented waste
     const wellManagedItems = items.filter((item) => {
-      if (!item.expiry_date) return true; // No expiry concern
+      if (!item.expiry_date) return true;
       const daysToExpiry = Math.ceil(
         (new Date(item.expiry_date) - new Date()) / (1000 * 60 * 60 * 24)
       );
       const daysLeft = item.daily_usage > 0 ? item.quantity / item.daily_usage : 999;
-      return daysToExpiry >= 7 && daysLeft >= 3; // Not expiring soon and not low stock
+      return daysToExpiry >= 7 && daysLeft >= 3;
     }).length;
 
-    // Estimate: $5 average value per well-managed item
     const predictedSavings = totalItems > 0 ? Math.round(wellManagedItems * 5) : 0;
-
-    // Calculate carbon reduced: based on waste prevention
-    // Each item saved from waste = ~0.5kg CO2 reduction
-    // NOTE: this now matches src/utils/metricsCalculator.ts exactly (the old
-    // version divided by an extra 1000, which made this endpoint's number
-    // 1000x smaller than what the dashboard displays).
     const carbonReduced = totalItems > 0 ? Math.round(wellManagedItems * 0.5 * 100) / 100 : 0;
 
     res.json({
@@ -470,7 +519,6 @@ export const getPredictions = async (req, res) => {
 
     const formattedItems = items.map((it) => (it.toJSON ? it.toJSON() : it));
 
-    // Call Python FastAPI ML Service
     try {
       const mlResponse = await fetch('http://127.0.0.1:8000/predict', {
         method: 'POST',
@@ -491,18 +539,15 @@ export const getPredictions = async (req, res) => {
       console.warn('ML Service is offline or unreachable. Using fallback predictions. Error:', err.message);
     }
 
-    // Fallback Predictions logic (if ML service is unreachable)
     const predictions = {};
     let totalScore = 0;
-    
+
     items.forEach((item) => {
-      // 1. Demand Forecast fallback
       const baseDaily = item.daily_usage || 0;
-      const demand_forecast = Array.from({ length: 7 }, (_, i) => 
+      const demand_forecast = Array.from({ length: 7 }, (_, i) =>
         Math.max(0.1, Math.round(baseDaily * (1 + Math.sin(i) * 0.15) * 100) / 100)
       );
 
-      // 2. Expiry Risk fallback
       let expiry_risk = 'Low';
       if (item.expiry_date) {
         const expDate = new Date(item.expiry_date);
@@ -512,14 +557,12 @@ export const getPredictions = async (req, res) => {
         else if (daysToExpiry < 10) expiry_risk = 'Medium';
       }
 
-      // 3. Low-Stock Probability fallback
       const daysLeft = item.daily_usage > 0 ? item.quantity / item.daily_usage : 999;
       let low_stock_probability = 0.05;
       if (daysLeft < 3) low_stock_probability = 0.95;
       else if (daysLeft < 7) low_stock_probability = 0.75;
       else if (daysLeft < 10) low_stock_probability = 0.45;
 
-      // 4. Refill Date fallback
       let refill_date = 'N/A';
       if (item.daily_usage > 0) {
         const daysToEmpty = item.quantity / item.daily_usage;

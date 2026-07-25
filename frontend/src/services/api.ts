@@ -64,6 +64,24 @@ export const inventoryApi = {
     const data = await response.json();
     return data.item;
   },
+  reorderItem: async (id: string): Promise<InventoryItem> => {
+    const response = await fetch(`${API_URL}/inventory/items/${id}/reorder`, {
+      method: 'PATCH',
+      headers: getAuthHeaders(),
+    });
+    if (!response.ok) {
+      let message = 'Failed to reorder item';
+      try {
+        const data = await response.json();
+        message = data.error || message;
+      } catch {
+        // ignore parse errors, use default message
+      }
+      throw new Error(message);
+    }
+    const data = await response.json();
+    return data.item;
+  },
 
   deleteItem: async (id: string): Promise<void> => {
     const response = await fetch(`${API_URL}/inventory/items/${id}`, {
@@ -181,5 +199,73 @@ export const teamApi = {
       }
       throw new Error(message);
     }
+  },
+};
+
+export interface ActionPlanTask {
+  id: string;
+  type: 'restock' | 'use_soon';
+  itemName: string;
+  description: string;
+  done: boolean;
+}
+
+export interface ActionPlan {
+  id: string;
+  householdId: string;
+  createdBy: string;
+  title: string;
+  tasks: ActionPlanTask[];
+  created_at: string;
+  updated_at: string;
+}
+
+async function parseErrorMessage(response: Response, fallback: string): Promise<string> {
+  try {
+    const data = await response.json();
+    return data.error || fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+export const actionPlanApi = {
+  getActionPlans: async (): Promise<ActionPlan[]> => {
+    const response = await fetch(`${API_URL}/action-plans`, {
+      headers: getAuthHeaders(),
+    });
+    if (!response.ok) throw new Error(await parseErrorMessage(response, 'Failed to fetch action plans'));
+    const data = await response.json();
+    return data.plans;
+  },
+
+  createActionPlan: async (title?: string): Promise<ActionPlan> => {
+    const response = await fetch(`${API_URL}/action-plans`, {
+      method: 'POST',
+      headers: getAuthHeaders(),
+      body: JSON.stringify(title ? { title } : {}),
+    });
+    if (!response.ok) throw new Error(await parseErrorMessage(response, 'Failed to create action plan'));
+    const data = await response.json();
+    return data.plan;
+  },
+
+  updateTaskStatus: async (planId: string, taskId: string, done: boolean): Promise<ActionPlan> => {
+    const response = await fetch(`${API_URL}/action-plans/${planId}/tasks/${taskId}`, {
+      method: 'PATCH',
+      headers: getAuthHeaders(),
+      body: JSON.stringify({ done }),
+    });
+    if (!response.ok) throw new Error(await parseErrorMessage(response, 'Failed to update task'));
+    const data = await response.json();
+    return data.plan;
+  },
+
+  deleteActionPlan: async (planId: string): Promise<void> => {
+    const response = await fetch(`${API_URL}/action-plans/${planId}`, {
+      method: 'DELETE',
+      headers: getAuthHeaders(),
+    });
+    if (!response.ok) throw new Error(await parseErrorMessage(response, 'Failed to delete action plan'));
   },
 };
