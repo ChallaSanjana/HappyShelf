@@ -757,26 +757,35 @@ export const getStats = async (req, res) => {
       return daysLeft < 3;
     }).length;
 
-    const expiringSoon = items.filter((item) => {
+    // `>= 0` here would silently drop already-expired items from the count —
+    // exactly the bug frontend/src/utils/metricsCalculator.ts documents fixing
+    // via isExpiredOrExpiringSoon (no lower bound on days). This endpoint
+    // never got that fix even though it computes the same "expiringSoon" stat,
+    // so an expired-but-still-in-stock item silently vanished from it here
+    // while correctly showing up everywhere the frontend derives its own stats.
+    const isExpiredOrExpiringSoon = (item, windowDays = 7) => {
       if (!item.expiry_date) return false;
-      const daysToExpiry = Math.ceil(
-        (new Date(item.expiry_date) - new Date()) / (1000 * 60 * 60 * 24)
-      );
-      return daysToExpiry >= 0 && daysToExpiry < 7;
-    }).length;
+      const daysToExpiry = Math.ceil((new Date(item.expiry_date) - new Date()) / (1000 * 60 * 60 * 24));
+      return daysToExpiry < windowDays;
+    };
+
+    const expiringSoon = items.filter((item) => isExpiredOrExpiringSoon(item, 7)).length;
 
     const categoryCounts = items.reduce((acc, item) => {
       acc[item.category] = (acc[item.category] || 0) + 1;
       return acc;
     }, {});
 
+    // The `if (!item.expiry_date) return true` early-return below used to skip
+    // the daysLeft check entirely for items with no expiry date, so a
+    // critically low-stock item with no expiry_date counted as "well managed"
+    // purely for lacking a date — inflating predictedSavings by its full
+    // value. daysLeft must be checked unconditionally, matching
+    // metricsCalculator.ts's wellManagedItemsList.
     const wellManagedItemsList = items.filter((item) => {
-      if (!item.expiry_date) return true;
-      const daysToExpiry = Math.ceil(
-        (new Date(item.expiry_date) - new Date()) / (1000 * 60 * 60 * 24)
-      );
+      if (isExpiredOrExpiringSoon(item, 0)) return false; // already past its expiry date
       const daysLeft = item.daily_usage > 0 ? item.quantity / item.daily_usage : 999;
-      return daysToExpiry >= 7 && daysLeft >= 3;
+      return !isExpiredOrExpiringSoon(item, 7) && daysLeft >= 3;
     });
 
     // Rupee value of stock currently safe from waste (not expiring soon,
