@@ -16,6 +16,13 @@ interface Props {
   onClose?: () => void;
   /** Optional callback when a menu item is activated. If omitted, sidebar will only track active item locally. */
   onNavigate?: (key: string) => void;
+  /**
+   * Which item to highlight, driven by the parent's actual current view.
+   * Without this the sidebar's highlight is self-managed and only updates on
+   * a sidebar click — any navigation that bypasses the sidebar (e.g. a logo
+   * click, a deep link) leaves it pointing at the wrong item.
+   */
+  activeKey?: string;
 }
 
 type MenuItemType = {
@@ -37,8 +44,11 @@ const items: MenuItemType[] = [
   { key: 'settings', label: 'Settings', icon: <Settings className="w-5 h-5" />, category: 'Admin', href: '/settings' },
 ];
 
-export const Sidebar: React.FC<Props> = ({ mobileOpen = false, onClose, onNavigate }) => {
-  const [active, setActive] = React.useState<string>('dashboard');
+export const Sidebar: React.FC<Props> = ({ mobileOpen = false, onClose, onNavigate, activeKey }) => {
+  const [localActive, setLocalActive] = React.useState<string>('dashboard');
+  // Controlled by the parent when activeKey is supplied; falls back to local
+  // state so the sidebar still works standalone (e.g. in isolation/tests).
+  const active = activeKey ?? localActive;
   const [collapsed, setCollapsed] = React.useState<Record<string, boolean>>({});
   const { user } = useAuth();
   const role = user?.role || 'Viewer';
@@ -67,7 +77,7 @@ export const Sidebar: React.FC<Props> = ({ mobileOpen = false, onClose, onNaviga
   }, [filteredItems]);
 
   const activate = (key: string) => {
-    setActive(key);
+    setLocalActive(key);
     if (onNavigate) onNavigate(key);
   };
 

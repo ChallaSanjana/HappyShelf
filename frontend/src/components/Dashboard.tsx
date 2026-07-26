@@ -661,9 +661,10 @@ export const Dashboard = () => {
         mobileOpen={mobileSidebarOpen}
         onClose={() => setMobileSidebarOpen(false)}
         onNavigate={(k) => { setView(k); setMobileSidebarOpen(false); }}
+        activeKey={view}
       />
 
-      <div className="flex-1 flex flex-col">
+      <div className="flex-1 flex flex-col min-w-0">
         <nav className="bg-white border-b border-gray-200 sticky top-0 z-30">
           <div className="px-4 sm:px-6 lg:px-8">
             <div className="flex justify-between items-center h-16">
@@ -675,10 +676,16 @@ export const Dashboard = () => {
                 >
                   <Menu className="w-6 h-6" />
                 </button>
-                <div className="bg-green-100 p-2 rounded-lg">
-                  <Leaf className="w-6 h-6 text-green-600" />
-                </div>
-                <h1 className="text-xl font-bold text-gray-800">HappyShelf</h1>
+                <button
+                  onClick={() => setView('dashboard')}
+                  className="flex items-center gap-3 hover:opacity-80 transition"
+                  aria-label="Go to dashboard"
+                >
+                  <div className="bg-green-100 p-2 rounded-lg">
+                    <Leaf className="w-6 h-6 text-green-600" />
+                  </div>
+                  <h1 className="text-xl font-bold text-gray-800">HappyShelf</h1>
+                </button>
               </div>
               <div className="flex items-center gap-4">
                 <span className="text-gray-700 hidden md:inline">Welcome, {user?.name}</span>
@@ -694,7 +701,7 @@ export const Dashboard = () => {
           </div>
         </nav>
 
-        <main className="flex-1 overflow-auto px-4 sm:px-6 lg:px-8 py-8">
+        <main className="flex-1 min-w-0 overflow-auto px-4 sm:px-6 lg:px-8 py-8">
           {/* Render different views based on sidebar selection */}
           {view === 'dashboard' && (
             <>
