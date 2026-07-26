@@ -40,6 +40,10 @@ const userSchema = new mongoose.Schema(
       ref: 'User',
       default: null,
     },
+    email_notifications: {
+      type: Boolean,
+      default: true,
+    },
   },
   {
     timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' },
@@ -68,10 +72,12 @@ userSchema.set('toJSON', {
     }
     ret.avatarUrl = ret.avatar_url || null;
     ret.isActive = ret.is_active !== false;
+    ret.emailNotifications = ret.email_notifications !== false;
     delete ret._id;
     delete ret.household_id;
     delete ret.avatar_url;
     delete ret.is_active;
+    delete ret.email_notifications;
     delete ret.__v;
     delete ret.password_hash;
     return ret;

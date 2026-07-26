@@ -35,7 +35,7 @@ import PurchaseRecommendations from './predictions/PurchaseRecommendations';
 import SeasonalTrends from './predictions/SeasonalTrends';
 
 export const Dashboard = () => {
-  const { user, logout } = useAuth();
+  const { user, logout, updateProfile } = useAuth();
   const [items, setItems] = useState<InventoryItem[]>([]);
   const [stats, setStats] = useState<Stats | null>(null);
   const [predictions, setPredictions] = useState<PredictionsResponse | null>(null);
@@ -52,14 +52,23 @@ export const Dashboard = () => {
   const [consumingItem, setConsumingItem] = useState<InventoryItem | null>(null);
   const [settingsState, setSettingsState] = useState({
     profileName: user?.name || '',
-    emailNotifications: true,
+    emailNotifications: user?.emailNotifications ?? true,
     weeklySummary: false,
   });
+  const [isSavingSettings, setIsSavingSettings] = useState(false);
 
   const skipSaveRef = useRef<{ settings: boolean }>({ settings: true });
 
   useEffect(() => {
     skipSaveRef.current = { settings: true };
+  }, [user]);
+
+  // emailNotifications is persisted server-side (it drives real low/out-of-stock
+  // alert emails), so the source of truth on login/refresh is `user`, not the
+  // locally-cached settings blob below — which only covers profileName/weeklySummary.
+  useEffect(() => {
+    if (!user) return;
+    setSettingsState((s) => ({ ...s, emailNotifications: user.emailNotifications ?? true, profileName: user.name }));
   }, [user]);
 
   useEffect(() => {
@@ -69,7 +78,10 @@ export const Dashboard = () => {
       const raw = localStorage.getItem(stKey);
       if (raw) {
         const parsed = JSON.parse(raw);
-        if (parsed && typeof parsed === 'object') setSettingsState((s) => ({ ...s, ...parsed }));
+        if (parsed && typeof parsed === 'object') {
+          const { emailNotifications: _ignored, ...rest } = parsed;
+          setSettingsState((s) => ({ ...s, ...rest }));
+        }
       }
     } catch {
       // ignore parse errors
@@ -84,7 +96,10 @@ export const Dashboard = () => {
     }
     const stKey = `hs:user:${user.id}:settings`;
     try {
-      localStorage.setItem(stKey, JSON.stringify(settingsState));
+      // emailNotifications is intentionally omitted here — it lives on the
+      // server (see effect above) so it doesn't need a local cache.
+      const { emailNotifications: _omit, ...toStore } = settingsState;
+      localStorage.setItem(stKey, JSON.stringify(toStore));
     } catch {
       // ignore
     }
@@ -1374,10 +1389,25 @@ export const Dashboard = () => {
 
                 <div className="flex items-center gap-3">
                   <button
-                    onClick={() => alert('Settings saved (local only)')}
-                    className="px-4 py-2 bg-green-600 text-white rounded"
+                    disabled={isSavingSettings}
+                    onClick={async () => {
+                      setIsSavingSettings(true);
+                      try {
+                        await updateProfile({
+                          name: settingsState.profileName,
+                          emailNotifications: settingsState.emailNotifications,
+                        });
+                        alert('Settings saved');
+                      } catch (err) {
+                        const error = err instanceof Error ? err : new Error(String(err));
+                        alert(error.message || 'Failed to save settings');
+                      } finally {
+                        setIsSavingSettings(false);
+                      }
+                    }}
+                    className="px-4 py-2 bg-green-600 text-white rounded disabled:opacity-50"
                   >
-                    Save
+                    {isSavingSettings ? 'Saving...' : 'Save'}
                   </button>
                 </div>
               </div>

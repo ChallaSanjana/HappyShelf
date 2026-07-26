@@ -2,8 +2,11 @@ import mongoose from 'mongoose';
 import Item from '../models/Item.js';
 import ReorderHistory from '../models/ReorderHistory.js';
 import ConsumptionHistory from '../models/ConsumptionHistory.js';
+import User from '../models/User.js';
+import { devUsers } from './authController.js';
 import { queryInventoryItems } from '../utils/inventoryQuery.js';
 import { buildDevHistoryBase } from '../utils/historyJson.js';
+import { sendStockAlert } from '../utils/mailer.js';
 
 // In-memory storage fallback for development when MongoDB is unavailable.
 // Exported so other controllers (actionPlanController) that need to read
@@ -100,6 +103,59 @@ function parseNumericFields(quantity, daily_usage) {
   }
 
   return result;
+}
+
+// Mirrors the "low stock" concept already used by getStats (daysLeft < 3)
+// plus an explicit "out" tier for zero quantity, and additionally treats
+// dropping to/below a user-configured min_stock_level as "low" even when
+// daily_usage is 0 or unset. Ranked so callers can detect status getting
+// *worse* (ok -> low -> out) rather than firing on every write once an item
+// is already sitting below threshold.
+const STOCK_STATUS_RANK = { ok: 0, low: 1, out: 2 };
+
+function getStockStatus(item) {
+  const quantity = item.quantity || 0;
+  if (quantity === 0) return 'out';
+
+  const dailyUsage = item.daily_usage || 0;
+  const daysLeft = dailyUsage > 0 ? quantity / dailyUsage : Infinity;
+  const belowMinStock = item.min_stock_level != null && quantity <= item.min_stock_level;
+
+  if (daysLeft < 3 || belowMinStock) return 'low';
+  return 'ok';
+}
+
+// Household members who should be emailed when stock status worsens: active,
+// and opted in (email_notifications defaults to true, so only an explicit
+// false excludes them).
+async function getNotifiableRecipients(householdId) {
+  if (!isDbConnected()) {
+    return Array.from(devUsers.values())
+      .filter((u) => u.household_id === householdId && u.is_active !== false && u.email_notifications !== false)
+      .map((u) => ({ email: u.email, name: u.name }));
+  }
+  const users = await User.find(
+    { household_id: householdId, is_active: { $ne: false }, email_notifications: { $ne: false } },
+    'email name'
+  );
+  return users.map((u) => ({ email: u.email, name: u.name }));
+}
+
+// Fire-and-forget from the caller's perspective — sendStockAlert/getNotifiableRecipients
+// never throw, but this is still wrapped so a future change to either can't
+// turn a successful consume/update/create into a 500.
+async function notifyIfStockStatusWorsened(householdId, itemBefore, itemAfter) {
+  try {
+    const before = itemBefore ? STOCK_STATUS_RANK[getStockStatus(itemBefore)] : STOCK_STATUS_RANK.ok;
+    const afterStatus = getStockStatus(itemAfter);
+    const after = STOCK_STATUS_RANK[afterStatus];
+    if (after <= before || after === STOCK_STATUS_RANK.ok) return;
+
+    const recipients = await getNotifiableRecipients(householdId);
+    await sendStockAlert(recipients, itemAfter, afterStatus);
+  } catch (error) {
+    console.error('Stock alert notification failed:', error.message);
+  }
 }
 
 export const getItems = async (req, res) => {
@@ -220,6 +276,7 @@ export const createItem = async (req, res) => {
       };
       items.push(newItem);
       console.log(`✓ Item created (in-memory): ${name}`);
+      await notifyIfStockStatusWorsened(req.user.householdId, null, newItem);
       return res.status(201).json({ message: 'Item created successfully (dev mode)', item: newItem });
     }
 
@@ -236,6 +293,8 @@ export const createItem = async (req, res) => {
       storage_location: storage_location || null,
       cost_per_unit: costPerUnit,
     });
+
+    await notifyIfStockStatusWorsened(req.user.householdId, null, newItem);
 
     res.status(201).json({ message: 'Item created successfully', item: newItem });
   } catch (error) {
@@ -395,6 +454,7 @@ export const updateItem = async (req, res) => {
       if (!item) {
         return res.status(404).json({ error: 'Item not found' });
       }
+      const beforeSnapshot = { quantity: item.quantity, daily_usage: item.daily_usage, min_stock_level: item.min_stock_level };
       if (name !== undefined) item.name = name;
       if (category !== undefined) item.category = category;
       if (numericFields.quantity !== undefined) item.quantity = numericFields.quantity;
@@ -406,6 +466,7 @@ export const updateItem = async (req, res) => {
       if (storage_location !== undefined) item.storage_location = storage_location || null;
       if (cost_per_unit !== undefined) item.cost_per_unit = costPerUnit;
       item.updated_at = new Date().toISOString();
+      await notifyIfStockStatusWorsened(req.user.householdId, beforeSnapshot, item);
       return res.json({ message: 'Item updated successfully (dev mode)', item });
     }
 
@@ -422,6 +483,15 @@ export const updateItem = async (req, res) => {
     if (storage_location !== undefined) updateData.storage_location = storage_location || null;
     if (cost_per_unit !== undefined) updateData.cost_per_unit = costPerUnit;
 
+    // Only fetch the pre-update state when quantity/min_stock_level are
+    // actually part of this request — those are the only fields that affect
+    // stock status, so an edit that e.g. only renames the item skips this
+    // extra query entirely.
+    let beforeItemForAlert = null;
+    if (numericFields.quantity !== undefined || minStock !== undefined) {
+      beforeItemForAlert = await Item.findOne({ _id: id, user_id: req.user.householdId });
+    }
+
     const updatedItem = await Item.findOneAndUpdate(
       { _id: id, user_id: req.user.householdId },
       updateData,
@@ -431,6 +501,8 @@ export const updateItem = async (req, res) => {
     if (!updatedItem) {
       return res.status(404).json({ error: 'Item not found' });
     }
+
+    await notifyIfStockStatusWorsened(req.user.householdId, beforeItemForAlert, updatedItem);
 
     res.json({ message: 'Item updated successfully', item: updatedItem });
   } catch (error) {
@@ -597,6 +669,7 @@ export const consumeItem = async (req, res) => {
           error: `Cannot consume ${consumeQty} ${item.unit} — only ${item.quantity} ${item.unit} in stock`,
         });
       }
+      const beforeSnapshot = { quantity: item.quantity, daily_usage: item.daily_usage, min_stock_level: item.min_stock_level };
       item.quantity = item.quantity - consumeQty;
       item.updated_at = new Date().toISOString();
 
@@ -607,6 +680,8 @@ export const consumeItem = async (req, res) => {
         consumedBy: req.user.userId,
       };
       getHouseholdConsumptionHistory(req.user.householdId).unshift(historyEntry);
+
+      await notifyIfStockStatusWorsened(req.user.householdId, beforeSnapshot, item);
 
       return res.json({
         message: 'Item consumed successfully (dev mode)',
@@ -647,6 +722,16 @@ export const consumeItem = async (req, res) => {
       unit: updatedItem.unit,
       consumed_by: req.user.userId,
     });
+
+    // updatedItem's quantity already reflects the atomic $inc decrement, so
+    // the pre-consume quantity can be reconstructed by adding consumeQty back
+    // — no extra query needed to know the "before" state.
+    const beforeSnapshot = {
+      quantity: updatedItem.quantity + consumeQty,
+      daily_usage: updatedItem.daily_usage,
+      min_stock_level: updatedItem.min_stock_level,
+    };
+    await notifyIfStockStatusWorsened(req.user.householdId, beforeSnapshot, updatedItem);
 
     res.json({
       message: 'Item consumed successfully',

@@ -6,6 +6,7 @@ interface User {
   name: string;
   role: string;
   householdId: string;
+  emailNotifications: boolean;
 }
 
 interface AuthContextType {
@@ -14,6 +15,7 @@ interface AuthContextType {
   login: (email: string, password: string) => Promise<void>;
   register: (email: string, password: string, name: string) => Promise<void>;
   logout: () => void;
+  updateProfile: (updates: { name?: string; emailNotifications?: boolean }) => Promise<void>;
   isLoading: boolean;
 }
 
@@ -106,8 +108,33 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     localStorage.removeItem('user');
   };
 
+  const updateProfile = async (updates: { name?: string; emailNotifications?: boolean }) => {
+    try {
+      const response = await fetch(`${API_BASE}/auth/me`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify(updates),
+      });
+
+      if (!response.ok) {
+        const message = await parseErrorResponse(response);
+        throw new Error(message || 'Failed to update profile');
+      }
+
+      const data = await response.json();
+      setUser(data.user);
+      localStorage.setItem('user', JSON.stringify(data.user));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to update profile';
+      throw new Error(message);
+    }
+  };
+
   return (
-    <AuthContext.Provider value={{ user, token, login, register, logout, isLoading }}>
+    <AuthContext.Provider value={{ user, token, login, register, logout, updateProfile, isLoading }}>
       {children}
     </AuthContext.Provider>
   );

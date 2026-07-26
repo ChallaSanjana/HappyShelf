@@ -85,7 +85,7 @@ export const register = async (req, res) => {
       }
 
       const userId = `dev_${nextUserId++}`;
-      const user = { id: userId, email, name, password_hash: passwordHash, role: 'Admin', household_id: userId };
+      const user = { id: userId, email, name, password_hash: passwordHash, role: 'Admin', household_id: userId, email_notifications: true };
       devUsers.set(email, user);
 
       const token = jwt.sign(
@@ -98,7 +98,7 @@ export const register = async (req, res) => {
       return res.status(201).json({
         message: 'User registered successfully (dev mode)',
         token,
-        user: { id: userId, email, name, role: 'Admin', householdId: userId },
+        user: { id: userId, email, name, role: 'Admin', householdId: userId, emailNotifications: true },
       });
     }
 
@@ -142,12 +142,13 @@ export const register = async (req, res) => {
     res.status(201).json({
       message: 'User registered successfully',
       token,
-      user: { 
-        id: newUser._id.toString(), 
-        email: newUser.email, 
-        name: newUser.name, 
-        role: newUser.role || 'Admin', 
-        householdId: (newUser.household_id || newUser._id).toString() 
+      user: {
+        id: newUser._id.toString(),
+        email: newUser.email,
+        name: newUser.name,
+        role: newUser.role || 'Admin',
+        householdId: (newUser.household_id || newUser._id).toString(),
+        emailNotifications: newUser.email_notifications !== false,
       },
     });
   } catch (error) {
@@ -190,7 +191,7 @@ export const login = async (req, res) => {
       return res.json({
         message: 'Login successful (dev mode)',
         token,
-        user: { id: user.id, email: user.email, name: user.name, role: user.role || 'Admin', householdId: user.household_id || user.id },
+        user: { id: user.id, email: user.email, name: user.name, role: user.role || 'Admin', householdId: user.household_id || user.id, emailNotifications: user.email_notifications !== false },
       });
     }
 
@@ -221,16 +222,86 @@ export const login = async (req, res) => {
     res.json({
       message: 'Login successful',
       token,
-      user: { 
-        id: user._id.toString(), 
-        email: user.email, 
-        name: user.name, 
-        role: user.role || 'Admin', 
-        householdId: (user.household_id || user._id).toString() 
+      user: {
+        id: user._id.toString(),
+        email: user.email,
+        name: user.name,
+        role: user.role || 'Admin',
+        householdId: (user.household_id || user._id).toString(),
+        emailNotifications: user.email_notifications !== false,
       },
     });
   } catch (error) {
     console.error('Login error:', error);
     res.status(500).json({ error: 'Failed to login' });
+  }
+};
+
+function serializeDevUser(user) {
+  return {
+    id: user.id,
+    email: user.email,
+    name: user.name,
+    role: user.role || 'Admin',
+    householdId: user.household_id || user.id,
+    emailNotifications: user.email_notifications !== false,
+  };
+}
+
+export const getMe = async (req, res) => {
+  try {
+    if (!isDbConnected()) {
+      const user = Array.from(devUsers.values()).find((u) => u.id === req.user.userId);
+      if (!user) {
+        return res.status(404).json({ error: 'User not found' });
+      }
+      return res.json({ user: serializeDevUser(user) });
+    }
+
+    const user = await User.findById(req.user.userId);
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+    res.json({ user });
+  } catch (error) {
+    console.error('Get profile error:', error);
+    res.status(500).json({ error: 'Failed to fetch profile' });
+  }
+};
+
+export const updateMe = async (req, res) => {
+  try {
+    const { name, emailNotifications } = req.body;
+
+    if (name !== undefined && (typeof name !== 'string' || !name.trim())) {
+      return res.status(400).json({ error: 'Name cannot be empty' });
+    }
+
+    if (emailNotifications !== undefined && typeof emailNotifications !== 'boolean') {
+      return res.status(400).json({ error: 'emailNotifications must be a boolean' });
+    }
+
+    if (!isDbConnected()) {
+      const user = Array.from(devUsers.values()).find((u) => u.id === req.user.userId);
+      if (!user) {
+        return res.status(404).json({ error: 'User not found' });
+      }
+      if (name !== undefined) user.name = name.trim();
+      if (emailNotifications !== undefined) user.email_notifications = emailNotifications;
+      return res.json({ message: 'Profile updated successfully (dev mode)', user: serializeDevUser(user) });
+    }
+
+    const updateData = {};
+    if (name !== undefined) updateData.name = name.trim();
+    if (emailNotifications !== undefined) updateData.email_notifications = emailNotifications;
+
+    const user = await User.findByIdAndUpdate(req.user.userId, updateData, { new: true });
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+    res.json({ message: 'Profile updated successfully', user });
+  } catch (error) {
+    console.error('Update profile error:', error);
+    res.status(500).json({ error: 'Failed to update profile' });
   }
 };
