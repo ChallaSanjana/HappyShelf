@@ -298,7 +298,7 @@ export const updateMe = async (req, res) => {
     if (name !== undefined) updateData.name = name.trim();
     if (emailNotifications !== undefined) updateData.email_notifications = emailNotifications;
 
-    const user = await User.findByIdAndUpdate(req.user.userId, updateData, { new: true });
+    const user = await User.findByIdAndUpdate(req.user.userId, updateData, { returnDocument: 'after' });
     if (!user) {
       return res.status(404).json({ error: 'User not found' });
     }

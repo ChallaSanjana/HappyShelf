@@ -448,7 +448,7 @@ export const updateItem = async (req, res) => {
     const updatedItem = await Item.findOneAndUpdate(
       { _id: id, household_id: req.user.householdId },
       updateData,
-      { new: true }
+      { returnDocument: 'after' }
     );
 
     if (!updatedItem) {
@@ -562,7 +562,7 @@ export const reorderItem = async (req, res) => {
     const updatedItem = await Item.findOneAndUpdate(
       { _id: id, household_id: req.user.householdId },
       { $inc: { quantity: reorderQty }, $set: setFields },
-      { new: true }
+      { returnDocument: 'after' }
     );
 
     const historyEntry = await ReorderHistory.create({
@@ -648,7 +648,7 @@ export const consumeItem = async (req, res) => {
     const updatedItem = await Item.findOneAndUpdate(
       { _id: id, household_id: req.user.householdId, quantity: { $gte: consumeQty } },
       { $inc: { quantity: -consumeQty } },
-      { new: true }
+      { returnDocument: 'after' }
     );
 
     if (!updatedItem) {
