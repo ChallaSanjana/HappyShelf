@@ -3,8 +3,16 @@ import Item from '../models/Item.js';
 import ReorderHistory from '../models/ReorderHistory.js';
 import ConsumptionHistory from '../models/ConsumptionHistory.js';
 import User from '../models/User.js';
-import { devUsers } from './authController.js';
+import { devUsers } from '../store/devStore.js';
 import { queryInventoryItems } from '../utils/inventoryQuery.js';
+import {
+  getStockStatus,
+  getDaysToExpiry,
+  estimateLowStockProbability,
+  STOCK_STATUS_RANK,
+  calculateStats,
+} from '../utils/inventoryMetrics.js';
+import { validateNewItem, parseNumericFields, VALID_UNITS } from '../utils/itemValidation.js';
 import { buildDevHistoryBase } from '../utils/historyJson.js';
 import { sendStockAlert } from '../utils/mailer.js';
 
@@ -45,22 +53,20 @@ function getHouseholdConsumptionHistory(householdId) {
   return devConsumptionHistory.get(householdId);
 }
 
+// The ML service was previously hardcoded to http://127.0.0.1:8000, which
+// meant the backend and the prediction service could never be deployed to
+// separate hosts without editing source. Both are configurable now; the
+// defaults keep local development working with no .env at all.
+const ML_SERVICE_URL = (process.env.ML_SERVICE_URL || 'http://127.0.0.1:8000').replace(/\/+$/, '');
+const ML_SERVICE_TOKEN = process.env.ML_SERVICE_TOKEN || '';
+const ML_SERVICE_TIMEOUT_MS = Number(process.env.ML_SERVICE_TIMEOUT_MS) || 5000;
+
 // readyState: 0 = disconnected, 1 = connected, 2 = connecting, 3 = disconnecting
 // Only treat the DB as usable when it's fully connected (state 1). Anything
 // else (including "connecting") falls back to in-memory storage instead of
 // letting Mongoose silently buffer/queue the query.
 function isDbConnected() {
   return mongoose.connection.readyState === 1;
-}
-
-// A user who registered/logged in while the DB was down gets a token with a
-// synthetic id like "dev_1", which is not a valid Mongo ObjectId. If the DB
-// comes back up during that token's 7-day lifetime, any query built from
-// req.user.userId would throw a Mongoose CastError (surfacing as an opaque
-// 500). Catch that case up front and return a clear, actionable error
-// instead, telling the user to log in again now that the DB is available.
-function isDevModeUserId(userId) {
-  return typeof userId === 'string' && userId.startsWith('dev_');
 }
 
 // req.params.id is a raw URL segment — if it isn't a valid 24-char hex
@@ -71,59 +77,10 @@ function isValidObjectId(id) {
   return mongoose.Types.ObjectId.isValid(id);
 }
 
-
-function rejectStaleDevSession(req, res) {
-  if (isDbConnected() && isDevModeUserId(req.user.userId)) {
-    res.status(409).json({
-      error: 'Your session was created while offline. Please log in again.',
-    });
-    return true;
-  }
-  return false;
-}
-
-// Validates and coerces quantity/daily_usage. parseInt/parseFloat return NaN
-// for non-numeric input, and NaN silently passes both `=== undefined` checks
-// and Mongoose's `min: 0` validator (NaN < 0 is false), so bad input could
-// otherwise reach storage untouched. Returns { quantity, daily_usage } on
-// success, or null if either provided value isn't a finite number.
-function parseNumericFields(quantity, daily_usage) {
-  const result = {};
-
-  if (quantity !== undefined) {
-    const parsedQuantity = parseInt(quantity, 10);
-    if (!Number.isFinite(parsedQuantity) || parsedQuantity < 0) return null;
-    result.quantity = parsedQuantity;
-  }
-
-  if (daily_usage !== undefined) {
-    const parsedDailyUsage = parseFloat(daily_usage);
-    if (!Number.isFinite(parsedDailyUsage) || parsedDailyUsage < 0) return null;
-    result.daily_usage = parsedDailyUsage;
-  }
-
-  return result;
-}
-
-// Mirrors the "low stock" concept already used by getStats (daysLeft < 3)
-// plus an explicit "out" tier for zero quantity, and additionally treats
-// dropping to/below a user-configured min_stock_level as "low" even when
-// daily_usage is 0 or unset. Ranked so callers can detect status getting
-// *worse* (ok -> low -> out) rather than firing on every write once an item
-// is already sitting below threshold.
-const STOCK_STATUS_RANK = { ok: 0, low: 1, out: 2 };
-
-function getStockStatus(item) {
-  const quantity = item.quantity || 0;
-  if (quantity === 0) return 'out';
-
-  const dailyUsage = item.daily_usage || 0;
-  const daysLeft = dailyUsage > 0 ? quantity / dailyUsage : Infinity;
-  const belowMinStock = item.min_stock_level != null && quantity <= item.min_stock_level;
-
-  if (daysLeft < 3 || belowMinStock) return 'low';
-  return 'ok';
-}
+// Sessions opened while the DB was down carry a synthetic "dev_" id that
+// can't be resolved once the DB is back. That's now rejected centrally in
+// middleware/auth.js, which re-reads the account on every request, so no
+// controller needs its own guard.
 
 // Household members who should be emailed when stock status worsens: active,
 // and opted in (email_notifications defaults to true, so only an explicit
@@ -146,10 +103,10 @@ async function getNotifiableRecipients(householdId) {
 // turn a successful consume/update/create into a 500.
 async function notifyIfStockStatusWorsened(householdId, itemBefore, itemAfter) {
   try {
-    const before = itemBefore ? STOCK_STATUS_RANK[getStockStatus(itemBefore)] : STOCK_STATUS_RANK.ok;
+    const before = itemBefore ? STOCK_STATUS_RANK[getStockStatus(itemBefore)] : STOCK_STATUS_RANK.healthy;
     const afterStatus = getStockStatus(itemAfter);
     const after = STOCK_STATUS_RANK[afterStatus];
-    if (after <= before || after === STOCK_STATUS_RANK.ok) return;
+    if (after <= before || after === STOCK_STATUS_RANK.healthy) return;
 
     const recipients = await getNotifiableRecipients(householdId);
     await sendStockAlert(recipients, itemAfter, afterStatus);
@@ -160,8 +117,6 @@ async function notifyIfStockStatusWorsened(householdId, itemBefore, itemAfter) {
 
 export const getItems = async (req, res) => {
   try {
-    if (rejectStaleDevSession(req, res)) return;
-
     let items;
     if (!isDbConnected()) {
       items = getUserItems(req.user.householdId).slice().sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
@@ -187,112 +142,37 @@ export const getItems = async (req, res) => {
   }
 };
 
+// Builds the in-memory representation of a validated item, matching the
+// shape Mongoose would return so both storage modes look identical to the
+// rest of the app.
+function buildDevItem(householdId, value) {
+  const now = new Date().toISOString();
+  return {
+    id: `dev_${nextItemId++}`,
+    user_id: householdId,
+    ...value,
+    created_at: now,
+    updated_at: now,
+  };
+}
+
 export const createItem = async (req, res) => {
   try {
-    if (rejectStaleDevSession(req, res)) return;
-
-    const { name, category, quantity, daily_usage, expiry_date, unit, purchase_date, min_stock_level, storage_location, cost_per_unit } = req.body;
-
-    if (!name || !category || quantity === undefined || daily_usage === undefined || !unit) {
-      return res.status(400).json({ error: 'Missing required fields' });
-    }
-
-    const numericFields = parseNumericFields(quantity, daily_usage);
-    if (!numericFields || numericFields.quantity === undefined || numericFields.daily_usage === undefined) {
-      return res.status(400).json({ error: 'quantity and daily_usage must be non-negative numbers' });
-    }
-
-    if (numericFields.quantity <= 0) {
-      return res.status(400).json({ error: 'Quantity must be positive' });
-    }
-
-    if (numericFields.daily_usage <= 0) {
-      return res.status(400).json({ error: 'Daily usage must be positive' });
-    }
-
-    const validUnits = ['pcs', 'kg', 'g', 'L', 'ml', 'packs', 'bottles', 'boxes', 'other'];
-    if (!validUnits.includes(unit)) {
-      return res.status(400).json({ error: 'Invalid unit value' });
-    }
-
-    let minStock = null;
-    if (min_stock_level !== undefined && min_stock_level !== null && min_stock_level !== '') {
-      minStock = parseInt(min_stock_level, 10);
-      if (Number.isNaN(minStock) || minStock < 0) {
-        return res.status(400).json({ error: 'Minimum stock level must be a non-negative number' });
-      }
-      if (minStock > numericFields.quantity) {
-        return res.status(400).json({ error: 'Minimum stock level cannot exceed quantity' });
-      }
-    }
-
-    let costPerUnit = null;
-    if (cost_per_unit !== undefined && cost_per_unit !== null && cost_per_unit !== '') {
-      costPerUnit = parseFloat(cost_per_unit);
-      if (!Number.isFinite(costPerUnit) || costPerUnit < 0) {
-        return res.status(400).json({ error: 'Cost per unit must be a non-negative number' });
-      }
-    }
-
-    if (purchase_date) {
-      const pDate = new Date(purchase_date);
-      if (Number.isNaN(pDate.getTime())) {
-        return res.status(400).json({ error: 'Invalid purchase date' });
-      }
-      const today = new Date();
-      today.setHours(23, 59, 59, 999);
-      if (pDate > today) {
-        return res.status(400).json({ error: 'Purchase date cannot be in the future' });
-      }
-    }
-
-    if (expiry_date && purchase_date) {
-      const eDate = new Date(expiry_date);
-      const pDate = new Date(purchase_date);
-      if (!Number.isNaN(eDate.getTime()) && !Number.isNaN(pDate.getTime())) {
-        if (eDate <= pDate) {
-          return res.status(400).json({ error: 'Expiry date must be after purchase date' });
-        }
-      }
+    const { error, value } = validateNewItem(req.body);
+    if (error) {
+      return res.status(400).json({ error });
     }
 
     if (!isDbConnected()) {
       const items = getUserItems(req.user.householdId);
-      const newItem = {
-        id: `dev_${nextItemId++}`,
-        user_id: req.user.householdId,
-        name,
-        category,
-        quantity: numericFields.quantity,
-        daily_usage: numericFields.daily_usage,
-        expiry_date: expiry_date || null,
-        unit,
-        purchase_date: purchase_date || null,
-        min_stock_level: minStock,
-        storage_location: storage_location || null,
-        cost_per_unit: costPerUnit,
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      };
+      const newItem = buildDevItem(req.user.householdId, value);
       items.push(newItem);
-      console.log(`✓ Item created (in-memory): ${name}`);
+      console.log(`✓ Item created (in-memory): ${value.name}`);
       await notifyIfStockStatusWorsened(req.user.householdId, null, newItem);
       return res.status(201).json({ message: 'Item created successfully (dev mode)', item: newItem });
     }
 
-    const newItem = await Item.create({
-      user_id: req.user.householdId,
-      name,
-      category,
-      quantity: numericFields.quantity,
-      daily_usage: numericFields.daily_usage,
-      expiry_date: expiry_date || null,
-      unit,
-      purchase_date: purchase_date || null,
-      min_stock_level: minStock,
-      storage_location: storage_location || null,
-      cost_per_unit: costPerUnit,
-    });
+    const newItem = await Item.create({ user_id: req.user.householdId, ...value });
 
     await notifyIfStockStatusWorsened(req.user.householdId, null, newItem);
 
@@ -303,10 +183,84 @@ export const createItem = async (req, res) => {
   }
 };
 
+/** Upper bound on a single bulk import call. */
+const MAX_BULK_ITEMS = 1000;
+
+/**
+ * Creates many items in one request.
+ *
+ * The CSV/JSON import in the UI previously issued one POST /items per row,
+ * so a 500-row spreadsheet meant 500 sequential round trips — minutes of
+ * waiting, and a partially-imported file if the user closed the tab.
+ *
+ * Rows are validated individually and reported per-row rather than failing
+ * the whole batch: an import of 300 good rows and 2 malformed ones should
+ * land the 300 and tell you about the 2. `ordered: false` gives the same
+ * semantics at the database level.
+ */
+export const bulkCreateItems = async (req, res) => {
+  try {
+    const { items: rawItems } = req.body;
+
+    if (!Array.isArray(rawItems)) {
+      return res.status(400).json({ error: 'Expected an "items" array' });
+    }
+    if (rawItems.length === 0) {
+      return res.status(400).json({ error: 'No items to import' });
+    }
+    if (rawItems.length > MAX_BULK_ITEMS) {
+      return res.status(400).json({
+        error: `Too many items in one request (${rawItems.length}). Maximum is ${MAX_BULK_ITEMS}.`,
+      });
+    }
+
+    const validated = [];
+    const errors = [];
+
+    rawItems.forEach((raw, index) => {
+      const { error, value } = validateNewItem(raw);
+      if (error) {
+        // 1-based and labelled by name so the message lines up with what the
+        // user sees in their spreadsheet.
+        errors.push({ row: index + 1, name: raw?.name || null, error });
+      } else {
+        validated.push(value);
+      }
+    });
+
+    if (validated.length === 0) {
+      return res.status(400).json({ error: 'No valid items to import', created: 0, errors });
+    }
+
+    if (!isDbConnected()) {
+      const items = getUserItems(req.user.householdId);
+      const created = validated.map((value) => buildDevItem(req.user.householdId, value));
+      items.push(...created);
+      return res.status(201).json({
+        message: `Imported ${created.length} item${created.length === 1 ? '' : 's'} (dev mode)`,
+        created: created.length,
+        items: created,
+        errors,
+      });
+    }
+
+    const docs = validated.map((value) => ({ user_id: req.user.householdId, ...value }));
+    const created = await Item.insertMany(docs, { ordered: false });
+
+    res.status(201).json({
+      message: `Imported ${created.length} item${created.length === 1 ? '' : 's'}`,
+      created: created.length,
+      items: created,
+      errors,
+    });
+  } catch (error) {
+    console.error('Bulk create items error:', error);
+    res.status(500).json({ error: 'Failed to import items' });
+  }
+};
+
 export const updateItem = async (req, res) => {
   try {
-    if (rejectStaleDevSession(req, res)) return;
-
     const { id } = req.params;
     const { name, category, quantity, daily_usage, expiry_date, unit, purchase_date, min_stock_level, storage_location, cost_per_unit } = req.body;
 
@@ -329,8 +283,7 @@ export const updateItem = async (req, res) => {
       return res.status(400).json({ error: 'Daily usage must be positive' });
     }
 
-    const validUnits = ['pcs', 'kg', 'g', 'L', 'ml', 'packs', 'bottles', 'boxes', 'other'];
-    if (unit !== undefined && !validUnits.includes(unit)) {
+    if (unit !== undefined && !VALID_UNITS.includes(unit)) {
       return res.status(400).json({ error: 'Invalid unit value' });
     }
 
@@ -530,8 +483,6 @@ function calculateSuggestedReorderQuantity(item) {
 
 export const reorderItem = async (req, res) => {
   try {
-    if (rejectStaleDevSession(req, res)) return;
-
     const { id } = req.params;
     const { quantity } = req.body;
 
@@ -644,8 +595,6 @@ export const reorderItem = async (req, res) => {
 // knows how to handle once quantity gets there.
 export const consumeItem = async (req, res) => {
   try {
-    if (rejectStaleDevSession(req, res)) return;
-
     const { id } = req.params;
     const { quantity } = req.body;
 
@@ -744,20 +693,53 @@ export const consumeItem = async (req, res) => {
   }
 };
 
+// The history logs were capped at a flat 50 entries, which is fine for the
+// "Recent activity" lists but far too short to draw a real trend from — it's
+// why the analytics charts used to invent their own data. `limit` and `days`
+// let a caller ask for an actual window. Both default to the previous
+// behaviour, so existing callers are unaffected.
+const DEFAULT_HISTORY_LIMIT = 50;
+const MAX_HISTORY_LIMIT = 2000;
+
+function parseHistoryQuery(query) {
+  const parsedLimit = parseInt(query.limit, 10);
+  const limit = Number.isFinite(parsedLimit)
+    ? Math.min(MAX_HISTORY_LIMIT, Math.max(1, parsedLimit))
+    : DEFAULT_HISTORY_LIMIT;
+
+  const parsedDays = parseInt(query.days, 10);
+  const since =
+    Number.isFinite(parsedDays) && parsedDays > 0
+      ? new Date(Date.now() - parsedDays * 24 * 60 * 60 * 1000)
+      : null;
+
+  return { limit, since };
+}
+
+/** Newest-first in-memory equivalent of the Mongo query below. */
+function sliceDevHistory(entries, { limit, since }) {
+  const withinWindow = since
+    ? entries.filter((entry) => new Date(entry.createdAt) >= since)
+    : entries;
+  return withinWindow.slice(0, limit);
+}
+
 export const getConsumptionHistory = async (req, res) => {
   try {
-    if (rejectStaleDevSession(req, res)) return;
-
     const householdId = req.user.householdId;
+    const { limit, since } = parseHistoryQuery(req.query);
 
     if (!isDbConnected()) {
-      const history = getHouseholdConsumptionHistory(householdId).slice(0, 50);
+      const history = sliceDevHistory(getHouseholdConsumptionHistory(householdId), { limit, since });
       return res.json({ history });
     }
 
-    const history = await ConsumptionHistory.find({ household_id: householdId })
+    const filter = { household_id: householdId };
+    if (since) filter.created_at = { $gte: since };
+
+    const history = await ConsumptionHistory.find(filter)
       .sort({ created_at: -1 })
-      .limit(50);
+      .limit(limit);
 
     res.json({ history });
   } catch (error) {
@@ -768,18 +750,20 @@ export const getConsumptionHistory = async (req, res) => {
 
 export const getReorderHistory = async (req, res) => {
   try {
-    if (rejectStaleDevSession(req, res)) return;
-
     const householdId = req.user.householdId;
+    const { limit, since } = parseHistoryQuery(req.query);
 
     if (!isDbConnected()) {
-      const history = getHouseholdHistory(householdId).slice(0, 50);
+      const history = sliceDevHistory(getHouseholdHistory(householdId), { limit, since });
       return res.json({ history });
     }
 
-    const history = await ReorderHistory.find({ household_id: householdId })
+    const filter = { household_id: householdId };
+    if (since) filter.created_at = { $gte: since };
+
+    const history = await ReorderHistory.find(filter)
       .sort({ created_at: -1 })
-      .limit(50);
+      .limit(limit);
 
     res.json({ history });
   } catch (error) {
@@ -790,8 +774,6 @@ export const getReorderHistory = async (req, res) => {
 
 export const deleteItem = async (req, res) => {
   try {
-    if (rejectStaleDevSession(req, res)) return;
-
     const { id } = req.params;
 
     if (isDbConnected() && !isValidObjectId(id)) {
@@ -826,8 +808,6 @@ export const deleteItem = async (req, res) => {
 
 export const getStats = async (req, res) => {
   try {
-    if (rejectStaleDevSession(req, res)) return;
-
     let items;
     if (!isDbConnected()) {
       items = getUserItems(req.user.householdId);
@@ -835,71 +815,87 @@ export const getStats = async (req, res) => {
       items = await Item.find({ user_id: req.user.householdId });
     }
 
-    const totalItems = items.length;
-
-    const lowStockItems = items.filter((item) => {
-      const daysLeft = item.daily_usage > 0 ? item.quantity / item.daily_usage : 999;
-      return daysLeft < 3;
-    }).length;
-
-    // `>= 0` here would silently drop already-expired items from the count —
-    // exactly the bug frontend/src/utils/metricsCalculator.ts documents fixing
-    // via isExpiredOrExpiringSoon (no lower bound on days). This endpoint
-    // never got that fix even though it computes the same "expiringSoon" stat,
-    // so an expired-but-still-in-stock item silently vanished from it here
-    // while correctly showing up everywhere the frontend derives its own stats.
-    const isExpiredOrExpiringSoon = (item, windowDays = 7) => {
-      if (!item.expiry_date) return false;
-      const daysToExpiry = Math.ceil((new Date(item.expiry_date) - new Date()) / (1000 * 60 * 60 * 24));
-      return daysToExpiry < windowDays;
-    };
-
-    const expiringSoon = items.filter((item) => isExpiredOrExpiringSoon(item, 7)).length;
-
-    const categoryCounts = items.reduce((acc, item) => {
-      acc[item.category] = (acc[item.category] || 0) + 1;
-      return acc;
-    }, {});
-
-    // The `if (!item.expiry_date) return true` early-return below used to skip
-    // the daysLeft check entirely for items with no expiry date, so a
-    // critically low-stock item with no expiry_date counted as "well managed"
-    // purely for lacking a date — inflating predictedSavings by its full
-    // value. daysLeft must be checked unconditionally, matching
-    // metricsCalculator.ts's wellManagedItemsList.
-    const wellManagedItemsList = items.filter((item) => {
-      if (isExpiredOrExpiringSoon(item, 0)) return false; // already past its expiry date
-      const daysLeft = item.daily_usage > 0 ? item.quantity / item.daily_usage : 999;
-      return !isExpiredOrExpiringSoon(item, 7) && daysLeft >= 3;
-    });
-
-    // Rupee value of stock currently safe from waste (not expiring soon,
-    // not low on stock) — quantity × cost_per_unit, summed only over items
-    // that actually have a cost entered. Items without cost_per_unit
-    // contribute 0 rather than a fabricated per-category price guess.
-    const predictedSavings = Math.round(
-      wellManagedItemsList.reduce((sum, item) => sum + (item.quantity || 0) * (item.cost_per_unit || 0), 0)
-    );
-    const carbonReduced = totalItems > 0 ? Math.round(wellManagedItemsList.length * 0.5 * 100) / 100 : 0;
-
-    res.json({
-      totalItems,
-      lowStockItems,
-      expiringSoon,
-      categoryCounts,
-      predictedSavings,
-      carbonReduced,
-    });
+    res.json(calculateStats(items));
   } catch (error) {
     console.error('Get stats error:', error);
     res.status(500).json({ error: 'Failed to fetch statistics' });
   }
 };
 
+// How much consumption history to hand the ML service so it can fit a
+// per-item demand model on this household's actual usage rather than on the
+// generic training CSVs. A year of data bounded at 2000 rows keeps the
+// request payload sane for even a heavy household.
+const ML_HISTORY_DAYS = 365;
+const ML_HISTORY_LIMIT = 2000;
+
+/**
+ * The household's recent consumption, flattened to the minimum the ML
+ * service needs to fit a demand model: which item, how much, and when.
+ */
+async function getConsumptionHistoryForMl(householdId) {
+  const since = new Date(Date.now() - ML_HISTORY_DAYS * 24 * 60 * 60 * 1000);
+
+  if (!isDbConnected()) {
+    return getHouseholdConsumptionHistory(householdId)
+      .filter((entry) => new Date(entry.createdAt) >= since)
+      .slice(0, ML_HISTORY_LIMIT)
+      .map((entry) => ({
+        item_id: String(entry.itemId),
+        item_name: entry.itemName,
+        quantity_consumed: entry.quantityConsumed,
+        consumed_at: entry.createdAt,
+      }));
+  }
+
+  const records = await ConsumptionHistory.find(
+    { household_id: householdId, created_at: { $gte: since } },
+    'item_id item_name quantity_consumed created_at'
+  )
+    .sort({ created_at: -1 })
+    .limit(ML_HISTORY_LIMIT)
+    .lean();
+
+  return records.map((entry) => ({
+    item_id: String(entry.item_id),
+    item_name: entry.item_name,
+    quantity_consumed: entry.quantity_consumed,
+    consumed_at: new Date(entry.created_at).toISOString(),
+  }));
+}
+
+/**
+ * Mean daily consumption per item over the supplied history, used by the JS
+ * fallback so it doesn't have to rely purely on the static `daily_usage`
+ * figure a user typed in months ago.
+ */
+function meanDailyConsumptionByItem(history) {
+  const totals = new Map();
+
+  for (const record of history) {
+    const key = String(record.item_id);
+    const at = new Date(record.consumed_at).getTime();
+    if (!Number.isFinite(at)) continue;
+
+    const current = totals.get(key) || { total: 0, earliest: at, latest: at };
+    current.total += Number(record.quantity_consumed) || 0;
+    current.earliest = Math.min(current.earliest, at);
+    current.latest = Math.max(current.latest, at);
+    totals.set(key, current);
+  }
+
+  const means = new Map();
+  for (const [key, { total, earliest, latest }] of totals) {
+    // At least a day of span so a single burst of consumes on one day can't
+    // divide by ~0 and report an absurd daily rate.
+    const spanDays = Math.max(1, (latest - earliest) / (24 * 60 * 60 * 1000));
+    means.set(key, total / spanDays);
+  }
+  return means;
+}
+
 export const getPredictions = async (req, res) => {
   try {
-    if (rejectStaleDevSession(req, res)) return;
-
     let items;
     if (!isDbConnected()) {
       items = getUserItems(req.user.householdId);
@@ -909,21 +905,37 @@ export const getPredictions = async (req, res) => {
 
     const formattedItems = items.map((it) => (it.toJSON ? it.toJSON() : it));
 
+    // Loaded once and used by both paths: sent to the ML service so it can
+    // learn this household's real pattern, and used by the JS fallback below
+    // if the service is unavailable.
+    let consumptionHistory = [];
+    try {
+      consumptionHistory = await getConsumptionHistoryForMl(req.user.householdId);
+    } catch (historyError) {
+      console.warn('Could not load consumption history for predictions:', historyError.message);
+    }
+
     try {
       // A slow-but-alive ML service would otherwise hang this request
       // indefinitely — the try/catch below only covers network errors and
       // non-2xx responses, not a stalled connection. Abort and fall through
       // to the JS fallback predictions if it doesn't respond in time.
       const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 5000);
+      const timeout = setTimeout(() => controller.abort(), ML_SERVICE_TIMEOUT_MS);
       let mlResponse;
       try {
-        mlResponse = await fetch('http://127.0.0.1:8000/predict', {
+        mlResponse = await fetch(`${ML_SERVICE_URL}/predict`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
+            // Only sent when configured; the ML service leaves the endpoint
+            // open (loopback-only) when it has no token either.
+            ...(ML_SERVICE_TOKEN ? { 'X-ML-Token': ML_SERVICE_TOKEN } : {}),
           },
-          body: JSON.stringify({ items: formattedItems }),
+          body: JSON.stringify({
+            items: formattedItems,
+            consumption_history: consumptionHistory,
+          }),
           signal: controller.signal,
         });
       } finally {
@@ -941,47 +953,54 @@ export const getPredictions = async (req, res) => {
       console.warn('ML Service is offline, unreachable, or timed out. Using fallback predictions. Error:', err.message);
     }
 
+    // --- JS fallback (ML service unreachable) ----------------------------
+    // Uses the same consumption history the ML service would have learned
+    // from, so an item with real usage data gets a forecast grounded in that
+    // rather than in the static daily_usage figure alone.
     const predictions = {};
+    const observedDailyUsage = meanDailyConsumptionByItem(consumptionHistory);
     let totalScore = 0;
 
     items.forEach((item) => {
-      const baseDaily = item.daily_usage || 0;
-      const demand_forecast = Array.from({ length: 7 }, (_, i) =>
-        Math.max(0.1, Math.round(baseDaily * (1 + Math.sin(i) * 0.15) * 100) / 100)
-      );
+      const itemId = item.id || item._id.toString();
+      const observed = observedDailyUsage.get(String(itemId));
+      const hasObserved = observed !== undefined && observed > 0;
+
+      // A flat projection of the best rate available. No sine wave: there is
+      // no daily pattern in this data, and inventing one produced a "trend"
+      // with nothing behind it.
+      const baseDaily = hasObserved ? observed : item.daily_usage || 0;
+      const demand_forecast = Array(7).fill(Math.max(0.1, Math.round(baseDaily * 100) / 100));
 
       let expiry_risk = 'Low';
-      if (item.expiry_date) {
-        const expDate = new Date(item.expiry_date);
-        const today = new Date();
-        const daysToExpiry = Math.ceil((expDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+      const daysToExpiry = getDaysToExpiry(item.expiry_date);
+      if (daysToExpiry !== null) {
         if (daysToExpiry < 3) expiry_risk = 'High';
         else if (daysToExpiry < 10) expiry_risk = 'Medium';
       }
 
-      const daysLeft = item.daily_usage > 0 ? item.quantity / item.daily_usage : 999;
-      let low_stock_probability = 0.05;
-      if (daysLeft < 3) low_stock_probability = 0.95;
-      else if (daysLeft < 7) low_stock_probability = 0.75;
-      else if (daysLeft < 10) low_stock_probability = 0.45;
+      const low_stock_probability = estimateLowStockProbability(item);
 
       let refill_date = 'N/A';
-      if (item.daily_usage > 0) {
+      if (baseDaily > 0) {
         // Math.floor to match the ML service's `int(days_to_empty)` truncation
         // (main.py) — schedules the refill on/before the day stock actually
         // runs out, rather than a day after, and keeps the answer identical
         // whether or not the ML service happens to be reachable.
-        const daysToEmpty = item.quantity / item.daily_usage;
+        const daysToEmpty = (item.quantity || 0) / baseDaily;
         const target = new Date();
         target.setDate(target.getDate() + Math.floor(daysToEmpty));
         refill_date = target.toISOString().split('T')[0];
       }
 
-      predictions[item.id || item._id.toString()] = {
+      predictions[itemId] = {
         demand_forecast,
         refill_date,
         expiry_risk,
         low_stock_probability,
+        // Mirrors the ML service's field so the UI can say where a forecast
+        // came from regardless of which path produced it.
+        forecast_source: hasObserved ? 'household_history' : 'daily_usage_estimate',
       };
 
       let score = 1.0;
