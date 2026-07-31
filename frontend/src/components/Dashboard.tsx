@@ -26,6 +26,7 @@ import CategoryInsights from './stats/CategoryInsights';
 import ExpiryAnalysis from './stats/ExpiryAnalysis';
 import CostAnalytics from './stats/CostAnalytics';
 import { LogOut, Plus, Package, AlertTriangle, Leaf, Download, RefreshCw, Menu, FileText } from 'lucide-react';
+import { LoadError } from './LoadError';
 // sustainability
 import FoodWasteTracker from './sustainability/FoodWasteTracker';
 import CO2Impact from './sustainability/CO2Impact';
@@ -51,6 +52,11 @@ export const Dashboard = () => {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingItem, setEditingItem] = useState<InventoryItem | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  // Load failures were previously only logged, leaving an empty screen that
+  // looked identical to having no data. Each is surfaced with a retry.
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [teamError, setTeamError] = useState<string | null>(null);
+  const [actionPlansError, setActionPlansError] = useState<string | null>(null);
   // Backed by the URL hash, so every view is linkable, survives a refresh,
   // and the browser back button walks through the views actually visited
   // instead of leaving the app entirely.
@@ -130,21 +136,27 @@ export const Dashboard = () => {
 
   const fetchTeamMembers = useCallback(async () => {
     if (!user || (role !== 'Admin' && role !== 'Manager')) return;
+    setTeamError(null);
     try {
       const members = await teamApi.getTeamMembers();
       setTeamMembers(members);
     } catch (err) {
+      // Surfaced in the UI rather than only the console: a failure here used
+      // to render as an empty team list, which reads as "nobody on the team".
       console.error('Failed to load team members:', err);
+      setTeamError(err instanceof Error ? err.message : String(err));
     }
   }, [user, role]);
 
   const fetchActionPlans = useCallback(async () => {
     if (!user) return;
+    setActionPlansError(null);
     try {
       const plans = await actionPlanApi.getActionPlans();
       setActionPlans(plans);
     } catch (err) {
       console.error('Failed to load action plans:', err);
+      setActionPlansError(err instanceof Error ? err.message : String(err));
     }
   }, [user]);
 
@@ -226,6 +238,7 @@ export const Dashboard = () => {
   const loadData = async () => {
     const seq = ++loadDataSeqRef.current;
     const isCurrent = () => seq === loadDataSeqRef.current;
+    setLoadError(null);
     try {
       const itemsData = await inventoryApi.getItems();
       if (!isCurrent()) return;
@@ -256,7 +269,11 @@ export const Dashboard = () => {
         console.warn('Failed to load consumption history:', consumptionError);
       }
     } catch (error) {
+      // Only the inventory fetch reaches here; predictions and history each
+      // have their own non-fatal handling above. Without this the dashboard
+      // rendered empty and silent whenever items failed to load.
       console.error('Failed to load data:', error);
+      if (isCurrent()) setLoadError(error instanceof Error ? error.message : String(error));
     } finally {
       if (isCurrent()) {
         setIsLoading(false);
@@ -553,6 +570,16 @@ export const Dashboard = () => {
         </nav>
 
         <main className="flex-1 min-w-0 overflow-auto px-4 sm:px-6 lg:px-8 py-8">
+          {/* Inventory drives every view, so this sits above all of them. */}
+          {loadError && (
+            <LoadError
+              what="your inventory"
+              detail={loadError}
+              onRetry={handleRefresh}
+              isRetrying={isRefreshing}
+            />
+          )}
+
           {/* Render different views based on sidebar selection */}
           {view === 'dashboard' && (
             <>
@@ -766,6 +793,13 @@ export const Dashboard = () => {
 
           {view === 'sustainability' && (
             <>
+              {actionPlansError && (
+                <LoadError
+                  what="your action plans"
+                  detail={actionPlansError}
+                  onRetry={fetchActionPlans}
+                />
+              )}
               <div className="mb-6">
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-4">
                   <StatCard title="Waste Reduced" value={stats?.totalItems ? Math.max(0, Math.round((stats.totalItems - (stats.expiringSoon || 0)) * 0.1)) : 0} icon={<Leaf className="w-6 h-6" />} color="green" />
@@ -1015,6 +1049,13 @@ export const Dashboard = () => {
 
           {view === 'team' && (
             <div className="mb-6">
+              {teamError && (
+                <LoadError
+                  what="your team members"
+                  detail={teamError}
+                  onRetry={fetchTeamMembers}
+                />
+              )}
               <div className="flex items-center justify-between p-6 bg-white rounded-t-xl border border-b-0 border-gray-200">
                 <h2 className="text-xl font-semibold text-gray-800">Team</h2>
                 <div className="text-sm text-gray-500">Manage team members and access</div>

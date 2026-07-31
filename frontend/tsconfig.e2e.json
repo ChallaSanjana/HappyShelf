@@ -1,0 +1,19 @@
+{
+  /*
+   * E2E specs are typechecked separately from the unit tests. Both define
+   * globals named `test` and `expect`, so pulling vitest/globals and
+   * @playwright/test into one program makes those names ambiguous. Keeping
+   * them apart also stops a Playwright API being reachable from a unit test.
+   */
+  "extends": "./tsconfig.app.json",
+  "compilerOptions": {
+    "types": ["node", "@playwright/test"],
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "noEmit": true
+  },
+  "include": ["e2e/**/*.ts", "playwright.config.ts"],
+  /* Overrides the app config's exclude, inherited via `extends`. */
+  "exclude": []
+}
