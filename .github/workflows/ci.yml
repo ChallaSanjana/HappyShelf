@@ -23,9 +23,10 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          # 24 (current LTS). Needs to be 22+ for `node --test` glob support,
-          # which the test script relies on; 24 additionally ships npm 11,
-          # matching the npm major that generated package-lock.json.
+          # Current LTS. The hard requirement is 22+, because `node --test`
+          # only accepts glob patterns from that version and the test script
+          # uses one; 24 is chosen over 22 purely for the longer support
+          # window. Node 20 is EOL.
           node-version: 24
           cache: npm
           cache-dependency-path: backend/package-lock.json
@@ -46,11 +47,12 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          # Matches the backend job. npm 11 (shipped with Node 24) is the
-          # major that generated package-lock.json — `npm ci` failed instantly
-          # under npm 10 on Node 22 despite the lockfile installing cleanly
-          # under npm 11. Node 24 is also the branch jsdom/vitest target
-          # (their engines read ^22.13 || >=24).
+          # Matches the backend job. Nothing here requires 24 specifically —
+          # every dependency's engines field accepts 22.13+ as well. An
+          # earlier revision claimed the npm major mattered for `npm ci`;
+          # that was wrong. The real cause was a lockfile missing entries
+          # for @emnapi/core and @emnapi/runtime, fixed by declaring them
+          # in package.json.
           node-version: 24
           cache: npm
           cache-dependency-path: frontend/package-lock.json

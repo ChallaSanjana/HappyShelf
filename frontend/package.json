@@ -22,7 +22,10 @@
     "react-chartjs-2": "^5.3.1",
     "react-dom": "^18.3.1"
   },
+  "_lockfileNote": "@emnapi/core and @emnapi/runtime below are not imported by this app. They are transitive dependencies of @rolldown/binding-wasm32-wasi (an optional dependency of rolldown, pulled in by vite/vitest). npm on Windows records that binding in package-lock.json but does not resolve its dependencies, because the binding is not installable here — leaving the lockfile naming packages it has no entries for. Linux npm does walk that subtree, so `npm ci` fails there with EUSAGE 'Missing: @emnapi/core from lock file'. Declaring them here forces npm to resolve them on every platform, so a lockfile regenerated on Windows can no longer omit them. Remove once rolldown no longer depends on a wasm32-wasi binding.",
   "devDependencies": {
+    "@emnapi/core": "2.0.0-alpha.3",
+    "@emnapi/runtime": "2.0.0-alpha.3",
     "@eslint/js": "^9.9.1",
     "@testing-library/jest-dom": "^7.0.0",
     "@testing-library/react": "^16.3.2",
