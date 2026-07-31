@@ -1,0 +1,26 @@
+{
+  /*
+   * Test files need Node globals (fs, path, __dirname) to read the shared
+   * fixtures, and vitest's ambient types. Those are deliberately kept out of
+   * tsconfig.app.json so application code can't reach for a Node API that
+   * won't exist in the browser.
+   */
+  "extends": "./tsconfig.app.json",
+  "compilerOptions": {
+    /* "vite/client" is needed for import.meta.env, which src/vite-env.d.ts
+       supplies to the app build but which an explicit `types` list replaces. */
+    "types": ["node", "vitest/globals", "vite/client"],
+    /* Tests run in Node, not a browser, so they can use newer library
+       features (Array.prototype.at) than the ES2020 the app build targets.
+       Deliberately not raised in tsconfig.app.json — that governs what ships
+       to browsers and is a separate decision. */
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "noEmit": true
+  },
+  "include": ["src/**/*.test.ts", "src/**/*.test.tsx", "src/test/**/*.ts"],
+  /* Overrides the app config's exclude, which would otherwise be inherited
+     through `extends` and cancel out every path included above. */
+  "exclude": []
+}
