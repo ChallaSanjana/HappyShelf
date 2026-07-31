@@ -329,6 +329,41 @@ Similarly, the "wasted" definition and the per-category CO₂ factors are shared
 from `frontend/src/utils/sustainability.ts` rather than copy-pasted into the
 waste tracker, the CO₂ chart, the sustainability score and the PDF report.
 
+## A note on the frontend lockfile
+
+`frontend/package.json` declares two devDependencies the app never imports:
+
+```json
+"@emnapi/core": "2.0.0-alpha.3",
+"@emnapi/runtime": "2.0.0-alpha.3"
+```
+
+They are transitive dependencies of `@rolldown/binding-wasm32-wasi`, an
+optional dependency of `rolldown` that arrives via vite/vitest. npm on Windows
+records that binding in `package-lock.json` but does not resolve its
+dependencies, because the binding is not installable there — leaving a lockfile
+that names packages it has no entries for. Linux npm *does* walk that subtree,
+so `npm ci` fails in CI with:
+
+```
+npm error code EUSAGE
+npm error Missing: @emnapi/core@2.0.0-alpha.3 from lock file
+```
+
+Declaring them explicitly forces npm to resolve them on every platform, so a
+lockfile regenerated on Windows can no longer omit them. No npm flag fixes this
+otherwise — `--package-lock-only`, a from-scratch regeneration, `--os=linux`
+and `--os=wasi` all reproduce the gap.
+
+Delete both entries once `rolldown` no longer ships a wasm32-wasi binding. If
+CI ever fails with that `EUSAGE` message again, check whether the same trick is
+needed for a newly added optional binding.
+
+**Regenerate the lockfile with `npm install`, never `npm install
+--package-lock-only`.** The latter strips `resolved` and `integrity` from
+several hundred entries, silently discarding the supply-chain pinning that
+makes `npm ci` reproducible.
+
 ## Building for Production
 
 ```bash
