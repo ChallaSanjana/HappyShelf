@@ -158,7 +158,7 @@ export const createActionPlan = async (req, res) => {
             });
         }
 
-        const items = await Item.find({ user_id: householdId });
+        const items = await Item.find({ household_id: householdId });
         const tasks = buildTasksFromItems(items);
 
         if (tasks.length === 0) {

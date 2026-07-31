@@ -3,6 +3,34 @@ import dotenv from 'dotenv';
 
 dotenv.config();
 
+/**
+ * Items used to store their household under `user_id`. Queries now read
+ * `household_id`, so any document left unmigrated matches nothing and simply
+ * disappears from the app while still sitting in the database — which looks
+ * exactly like data loss to whoever owns it.
+ *
+ * Detection only. Migrating automatically at startup would race across
+ * workers and hide a decision that deserves to be deliberate.
+ */
+async function warnAboutUnmigratedItems() {
+  try {
+    const legacy = await mongoose.connection
+      .collection('inventory_items')
+      .countDocuments({ user_id: { $exists: true }, household_id: { $exists: false } }, { limit: 1 });
+
+    if (legacy > 0) {
+      console.warn('');
+      console.warn('⚠️  Inventory items are still stored under the old `user_id` field.');
+      console.warn('   They will NOT appear in the app until they are renamed.');
+      console.warn('   Run: node scripts/migrate-item-household-id.js --dry-run');
+      console.warn('   then without --dry-run to apply.');
+      console.warn('');
+    }
+  } catch {
+    // A failed check must never prevent the app from starting.
+  }
+}
+
 const connectDB = async () => {
   const mongoURI = process.env.MONGODB_URI || 'mongodb://localhost:27017/happyshelf';
 
@@ -16,6 +44,7 @@ const connectDB = async () => {
   try {
     await mongoose.connect(mongoURI, { serverSelectionTimeoutMS });
     console.log('✅ MongoDB connected successfully');
+    await warnAboutUnmigratedItems();
     return true;
   } catch (error) {
     console.error('❌ MongoDB connection error:', error.message);

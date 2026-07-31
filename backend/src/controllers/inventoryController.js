@@ -121,7 +121,7 @@ export const getItems = async (req, res) => {
     if (!isDbConnected()) {
       items = getUserItems(req.user.householdId).slice().sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
     } else {
-      items = await Item.find({ user_id: req.user.householdId }).sort({ createdAt: -1 });
+      items = await Item.find({ household_id: req.user.householdId }).sort({ createdAt: -1 });
     }
 
     // Only the Inventory page's search/filter/sort/pagination toolbar sends
@@ -149,7 +149,7 @@ function buildDevItem(householdId, value) {
   const now = new Date().toISOString();
   return {
     id: `dev_${nextItemId++}`,
-    user_id: householdId,
+    household_id: householdId,
     ...value,
     created_at: now,
     updated_at: now,
@@ -172,7 +172,7 @@ export const createItem = async (req, res) => {
       return res.status(201).json({ message: 'Item created successfully (dev mode)', item: newItem });
     }
 
-    const newItem = await Item.create({ user_id: req.user.householdId, ...value });
+    const newItem = await Item.create({ household_id: req.user.householdId, ...value });
 
     await notifyIfStockStatusWorsened(req.user.householdId, null, newItem);
 
@@ -244,7 +244,7 @@ export const bulkCreateItems = async (req, res) => {
       });
     }
 
-    const docs = validated.map((value) => ({ user_id: req.user.householdId, ...value }));
+    const docs = validated.map((value) => ({ household_id: req.user.householdId, ...value }));
     const created = await Item.insertMany(docs, { ordered: false });
 
     res.status(201).json({
@@ -311,7 +311,7 @@ export const updateItem = async (req, res) => {
         const items = getUserItems(req.user.householdId);
         existingItem = items.find(it => it.id === id);
       } else {
-        existingItem = await Item.findOne({ _id: id, user_id: req.user.householdId });
+        existingItem = await Item.findOne({ _id: id, household_id: req.user.householdId });
       }
       if (existingItem) {
         if (targetQuantity === undefined) targetQuantity = existingItem.quantity;
@@ -374,7 +374,7 @@ export const updateItem = async (req, res) => {
         const items = getUserItems(req.user.householdId);
         existingItem = items.find(it => it.id === id);
       } else {
-        existingItem = await Item.findOne({ _id: id, user_id: req.user.householdId });
+        existingItem = await Item.findOne({ _id: id, household_id: req.user.householdId });
       }
 
       if (existingItem) {
@@ -442,11 +442,11 @@ export const updateItem = async (req, res) => {
     // extra query entirely.
     let beforeItemForAlert = null;
     if (numericFields.quantity !== undefined || minStock !== undefined) {
-      beforeItemForAlert = await Item.findOne({ _id: id, user_id: req.user.householdId });
+      beforeItemForAlert = await Item.findOne({ _id: id, household_id: req.user.householdId });
     }
 
     const updatedItem = await Item.findOneAndUpdate(
-      { _id: id, user_id: req.user.householdId },
+      { _id: id, household_id: req.user.householdId },
       updateData,
       { new: true }
     );
@@ -537,7 +537,7 @@ export const reorderItem = async (req, res) => {
       });
     }
 
-    const existingItem = await Item.findOne({ _id: id, user_id: req.user.householdId });
+    const existingItem = await Item.findOne({ _id: id, household_id: req.user.householdId });
     if (!existingItem) {
       return res.status(404).json({ error: 'Item not found' });
     }
@@ -560,7 +560,7 @@ export const reorderItem = async (req, res) => {
     // `quantity` (which a read-then-write like `existingItem.quantity + reorderQty`
     // would silently lose under a race).
     const updatedItem = await Item.findOneAndUpdate(
-      { _id: id, user_id: req.user.householdId },
+      { _id: id, household_id: req.user.householdId },
       { $inc: { quantity: reorderQty }, $set: setFields },
       { new: true }
     );
@@ -646,13 +646,13 @@ export const consumeItem = async (req, res) => {
     // Whichever request's decrement would take stock below 0 simply doesn't
     // match the filter and returns null instead of writing a negative value.
     const updatedItem = await Item.findOneAndUpdate(
-      { _id: id, user_id: req.user.householdId, quantity: { $gte: consumeQty } },
+      { _id: id, household_id: req.user.householdId, quantity: { $gte: consumeQty } },
       { $inc: { quantity: -consumeQty } },
       { new: true }
     );
 
     if (!updatedItem) {
-      const existingItem = await Item.findOne({ _id: id, user_id: req.user.householdId });
+      const existingItem = await Item.findOne({ _id: id, household_id: req.user.householdId });
       if (!existingItem) {
         return res.status(404).json({ error: 'Item not found' });
       }
@@ -792,7 +792,7 @@ export const deleteItem = async (req, res) => {
 
     const deletedItem = await Item.findOneAndDelete({
       _id: id,
-      user_id: req.user.householdId,
+      household_id: req.user.householdId,
     });
 
     if (!deletedItem) {
@@ -812,7 +812,7 @@ export const getStats = async (req, res) => {
     if (!isDbConnected()) {
       items = getUserItems(req.user.householdId);
     } else {
-      items = await Item.find({ user_id: req.user.householdId });
+      items = await Item.find({ household_id: req.user.householdId });
     }
 
     res.json(calculateStats(items));
@@ -900,7 +900,7 @@ export const getPredictions = async (req, res) => {
     if (!isDbConnected()) {
       items = getUserItems(req.user.householdId);
     } else {
-      items = await Item.find({ user_id: req.user.householdId });
+      items = await Item.find({ household_id: req.user.householdId });
     }
 
     const formattedItems = items.map((it) => (it.toJSON ? it.toJSON() : it));

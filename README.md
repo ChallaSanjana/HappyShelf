@@ -364,6 +364,40 @@ needed for a newly added optional binding.
 several hundred entries, silently discarding the supply-chain pinning that
 makes `npm ci` reproducible.
 
+## Upgrading: the Item household field
+
+Inventory items used to store their household under a field named `user_id`,
+even though the value was always a household id, not a user id. It is now
+`household_id`. The misnomer was worth removing rather than living with: the
+next person to touch scoping reads `user_id` and reasonably assumes per-user
+ownership, and getting that wrong leaks one household's inventory into
+another's.
+
+**Existing databases must be migrated**, otherwise every stored item stops
+matching the new queries and disappears from the app while still sitting in
+the collection:
+
+```bash
+cd backend
+node scripts/migrate-item-household-id.js --dry-run   # report only
+node scripts/migrate-item-household-id.js             # apply
+```
+
+The script is idempotent, so running it twice is a no-op. It renames
+documents that carry only `user_id`, drops a redundant `user_id` where both
+fields agree, and **skips** any document whose two fields disagree — that
+conflict cannot be resolved safely without knowing which value is correct, so
+it is reported for manual attention instead of guessed at. Once nothing
+carries `user_id`, the stale index is dropped too.
+
+The backend also detects the situation on startup and prints a warning naming
+the script, so an unmigrated deployment announces itself rather than quietly
+showing empty inventories. Detection only — migrating automatically would
+race across workers and hide a decision worth making deliberately.
+
+Over the wire the field is now `householdId`, matching `User`, `ActionPlan`
+and the history models, which already used that name.
+
 ## Building for Production
 
 ```bash

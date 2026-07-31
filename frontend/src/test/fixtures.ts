@@ -60,7 +60,7 @@ function materialize(item: RawFixtureItem): InventoryItem {
   return {
     ...rest,
     expiry_date,
-    user_id: 'household-1',
+    householdId: 'household-1',
     created_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
   } as InventoryItem;
@@ -76,7 +76,7 @@ export const expectedStats = raw.expectedStats;
 export function makeItem(overrides: Partial<InventoryItem> = {}): InventoryItem {
   return {
     id: 'item-1',
-    user_id: 'household-1',
+    householdId: 'household-1',
     name: 'Rice',
     category: 'Grains',
     quantity: 100,
