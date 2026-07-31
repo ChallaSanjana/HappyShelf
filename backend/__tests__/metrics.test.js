@@ -10,6 +10,9 @@ import {
   calculateStats,
   getWellManagedItems,
   estimateLowStockProbability,
+  calculateRefillDate,
+  MAX_REFILL_HORIZON_DAYS,
+  NO_REFILL_DATE,
   LOW_STOCK_DAYS,
   EXPIRY_WINDOW_DAYS,
   LOW_STOCK_PROBABILITY_BANDS,
@@ -100,6 +103,57 @@ describe('estimateLowStockProbability', () => {
       assert.ok(band.probability > 0 && band.probability <= 1);
     }
     assert.ok(BASELINE_LOW_STOCK_PROBABILITY > 0 && BASELINE_LOW_STOCK_PROBABILITY <= 1);
+  });
+});
+
+describe('calculateRefillDate', () => {
+  const FIXED = new Date('2026-08-01T00:00:00.000Z');
+
+  test('projects the day stock runs out', () => {
+    assert.equal(calculateRefillDate(10, 1, FIXED), '2026-08-11');
+  });
+
+  test('truncates rather than rounding, matching the ML service', () => {
+    // 10 / 3 = 3.33 days -> floor 3, so the refill lands on or before the
+    // day stock actually runs out, never after.
+    assert.equal(calculateRefillDate(10, 3, FIXED), '2026-08-04');
+  });
+
+  test('an item that is never consumed has no refill date', () => {
+    assert.equal(calculateRefillDate(10, 0, FIXED), NO_REFILL_DATE);
+  });
+
+  test('out of stock refills today', () => {
+    assert.equal(calculateRefillDate(0, 1, FIXED), '2026-08-01');
+  });
+
+  test('exactly at the horizon still returns a date', () => {
+    const at = calculateRefillDate(MAX_REFILL_HORIZON_DAYS, 1, FIXED);
+    assert.notEqual(at, NO_REFILL_DATE);
+    assert.match(at, /^\d{4}-\d{2}-\d{2}$/);
+  });
+
+  test('one day past the horizon returns the sentinel', () => {
+    assert.equal(calculateRefillDate(MAX_REFILL_HORIZON_DAYS + 1, 1, FIXED), NO_REFILL_DATE);
+  });
+
+  test('an extreme ratio does not throw', () => {
+    // Previously `new Date(...).toISOString()` threw RangeError here, which
+    // failed the whole predictions response rather than this one item.
+    assert.doesNotThrow(() => calculateRefillDate(1_000_000, 0.01, FIXED));
+    assert.equal(calculateRefillDate(1_000_000, 0.01, FIXED), NO_REFILL_DATE);
+    assert.equal(calculateRefillDate(1e9, 1e-6, FIXED), NO_REFILL_DATE);
+  });
+
+  test('non-finite and missing input yields the sentinel, not a crash', () => {
+    assert.equal(calculateRefillDate(Infinity, 1, FIXED), NO_REFILL_DATE);
+    assert.equal(calculateRefillDate(NaN, 1, FIXED), NO_REFILL_DATE);
+    assert.equal(calculateRefillDate(10, NaN, FIXED), NO_REFILL_DATE);
+    assert.equal(calculateRefillDate(undefined, undefined, FIXED), NO_REFILL_DATE);
+  });
+
+  test('negative quantity is clamped rather than dated in the past', () => {
+    assert.equal(calculateRefillDate(-50, 1, FIXED), '2026-08-01');
   });
 });
 

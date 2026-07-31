@@ -93,6 +93,54 @@ export function estimateLowStockProbability(item) {
   return BASELINE_LOW_STOCK_PROBABILITY;
 }
 
+/**
+ * Beyond this many days of remaining supply a refill date stops meaning
+ * anything, and the arithmetic stops being safe: a large enough offset makes
+ * `Date` invalid, and `toISOString()` on an invalid Date throws RangeError —
+ * which previously took down the entire predictions response, not just the
+ * one item.
+ *
+ * 100 years is far outside any useful horizon while leaving a wide margin
+ * below the point where Date breaks, so nothing that produces a sensible
+ * date today changes. Kept identical to MAX_REFILL_HORIZON_DAYS in
+ * ml_service/main.py, which computes the same thing for the ML path.
+ */
+export const MAX_REFILL_HORIZON_DAYS = 36500;
+
+/** Returned when no meaningful refill date exists. Matches the ML service. */
+export const NO_REFILL_DATE = 'N/A';
+
+/**
+ * The day stock is projected to run out, or NO_REFILL_DATE when that isn't a
+ * meaningful answer.
+ *
+ * Math.floor matches the ML service's int() truncation, so the answer is the
+ * same whether or not that service is reachable.
+ */
+export function calculateRefillDate(quantity, dailyUsage, today = new Date()) {
+  const usage = Number(dailyUsage);
+  if (!Number.isFinite(usage) || usage <= 0) return NO_REFILL_DATE;
+
+  const qty = Number(quantity);
+  if (!Number.isFinite(qty)) return NO_REFILL_DATE;
+
+  let daysToEmpty = qty / usage;
+  if (!Number.isFinite(daysToEmpty)) return NO_REFILL_DATE;
+
+  // Not reachable through the API (quantity is validated non-negative) but
+  // clamped rather than trusted — a negative offset would quietly report a
+  // refill date in the past.
+  if (daysToEmpty < 0) daysToEmpty = 0;
+
+  if (daysToEmpty > MAX_REFILL_HORIZON_DAYS) return NO_REFILL_DATE;
+
+  const target = new Date(today.getTime());
+  target.setDate(target.getDate() + Math.floor(daysToEmpty));
+
+  if (Number.isNaN(target.getTime())) return NO_REFILL_DATE;
+  return target.toISOString().split('T')[0];
+}
+
 /** Whole days until expiry (negative if already past), or null if unset. */
 export function getDaysToExpiry(expiryDate) {
   if (!expiryDate) return null;

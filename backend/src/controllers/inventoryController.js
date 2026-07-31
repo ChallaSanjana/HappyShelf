@@ -9,6 +9,7 @@ import {
   getStockStatus,
   getDaysToExpiry,
   estimateLowStockProbability,
+  calculateRefillDate,
   STOCK_STATUS_RANK,
   calculateStats,
 } from '../utils/inventoryMetrics.js';
@@ -981,17 +982,11 @@ export const getPredictions = async (req, res) => {
 
       const low_stock_probability = estimateLowStockProbability(item);
 
-      let refill_date = 'N/A';
-      if (baseDaily > 0) {
-        // Math.floor to match the ML service's `int(days_to_empty)` truncation
-        // (main.py) — schedules the refill on/before the day stock actually
-        // runs out, rather than a day after, and keeps the answer identical
-        // whether or not the ML service happens to be reachable.
-        const daysToEmpty = (item.quantity || 0) / baseDaily;
-        const target = new Date();
-        target.setDate(target.getDate() + Math.floor(daysToEmpty));
-        refill_date = target.toISOString().split('T')[0];
-      }
+      // Shared with the ML service's calculate_refill_date, including the
+      // horizon beyond which no date is returned. Computing it inline here
+      // used to throw RangeError on a large enough quantity/usage ratio,
+      // which failed the whole response rather than the one item.
+      const refill_date = calculateRefillDate(item.quantity, baseDaily);
 
       predictions[itemId] = {
         demand_forecast,

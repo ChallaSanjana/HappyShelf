@@ -1,7 +1,9 @@
 import datetime
 import hashlib
 import hmac
+import math
 import os
+import threading
 from collections import OrderedDict
 from typing import List, Optional
 
@@ -42,6 +44,25 @@ MIN_HISTORY_POINTS = 8
 # every refresh, and refitting identical data each time is pure waste. Bounded
 # so a busy multi-household deployment can't grow it without limit.
 MAX_FITTED_CACHE_ENTRIES = 256
+
+# Beyond this many days of remaining supply a refill date stops meaning
+# anything, and the arithmetic that produces it stops being safe: once
+# `days_to_empty` pushes past the year 9999 (roughly 2.9 million days out)
+# `date + timedelta` raises OverflowError, which 500s the whole request and
+# takes every other item's forecast down with it.
+#
+# 100 years is far outside any useful horizon while still leaving a wide
+# margin below the overflow point, so nothing that produces a sensible date
+# today changes behaviour — only the cases that previously crashed.
+#
+# Kept identical in backend/src/utils/inventoryMetrics.js, which does the
+# same calculation for the JS fallback.
+MAX_REFILL_HORIZON_DAYS = 36500
+
+# Returned when a refill date cannot be given: nothing is being consumed, or
+# the item would not run out within the horizon above. Already the value used
+# for zero-usage items, so clients need no new case.
+NO_REFILL_DATE = "N/A"
 
 # Shared secret the backend must present. Set ML_SERVICE_TOKEN on both sides.
 # Left unset, the service stays open — acceptable only when it is bound to
@@ -296,6 +317,12 @@ if not ML_SERVICE_TOKEN:
 
 _fitted_cache: "OrderedDict[str, DecisionTreeRegressor]" = OrderedDict()
 
+# /predict is a sync def, so FastAPI runs it in a threadpool and several
+# requests can touch the cache at once. OrderedDict is not safe across the
+# read-then-move_to_end and insert-then-popitem sequences below, which can
+# raise or drop an entry under concurrency.
+_fitted_cache_lock = threading.Lock()
+
 
 def _date_features(day: datetime.date) -> List[int]:
     """The same four features the pre-trained demand models were fitted on."""
@@ -367,15 +394,23 @@ def get_household_demand_model(
     """Cached wrapper around fit_household_demand_model."""
     cache_key = f"{item_id}:{_history_digest(records)}"
 
-    if cache_key in _fitted_cache:
-        _fitted_cache.move_to_end(cache_key)
-        return _fitted_cache[cache_key]
+    with _fitted_cache_lock:
+        if cache_key in _fitted_cache:
+            _fitted_cache.move_to_end(cache_key)
+            return _fitted_cache[cache_key]
 
+    # Fitted outside the lock so one slow fit doesn't block every other
+    # request. Two threads racing on the same key may both fit it; that
+    # wastes a little work but is harmless, because the fit is deterministic
+    # (random_state is fixed) so they produce the same model.
     model = fit_household_demand_model(records)
+
     if model is not None:
-        _fitted_cache[cache_key] = model
-        while len(_fitted_cache) > MAX_FITTED_CACHE_ENTRIES:
-            _fitted_cache.popitem(last=False)
+        with _fitted_cache_lock:
+            _fitted_cache[cache_key] = model
+            _fitted_cache.move_to_end(cache_key)
+            while len(_fitted_cache) > MAX_FITTED_CACHE_ENTRIES:
+                _fitted_cache.popitem(last=False)
 
     return model
 
@@ -389,6 +424,61 @@ def forecast_with_model(model) -> List[float]:
         frame = pd.DataFrame([_date_features(future)], columns=DEMAND_FEATURE_COLUMNS)
         forecast.append(max(0.1, float(np.round(model.predict(frame)[0], 2))))
     return forecast
+
+
+def calculate_refill_date(quantity: float, daily_usage: float) -> str:
+    """
+    The day stock is projected to run out, or NO_REFILL_DATE when that is not
+    a meaningful answer.
+
+    Truncates with int() to match the JS fallback's Math.floor, so the answer
+    is identical whether or not this service happens to be reachable.
+
+    Guards three ways before touching date arithmetic: no consumption at all,
+    a non-finite ratio (NaN/inf from degenerate input), and a horizon beyond
+    which the timedelta would overflow and 500 the entire request.
+    """
+    if daily_usage <= 0:
+        return NO_REFILL_DATE
+
+    days_to_empty = quantity / daily_usage
+
+    if not math.isfinite(days_to_empty):
+        return NO_REFILL_DATE
+
+    # Negative is not reachable through the API (quantity is validated
+    # non-negative) but is clamped rather than trusted, since a negative
+    # timedelta would silently report a refill date in the past.
+    if days_to_empty < 0:
+        days_to_empty = 0
+
+    if days_to_empty > MAX_REFILL_HORIZON_DAYS:
+        return NO_REFILL_DATE
+
+    return (datetime.date.today() + datetime.timedelta(days=int(days_to_empty))).isoformat()
+
+
+def low_stock_probability_from(model, days_until_out_of_stock: float, min_stock: float) -> float:
+    """
+    P(low stock) from the fitted classifier.
+
+    Indexes by the model's own `classes_` rather than assuming the positive
+    class sits at position 1. With the usual two-class fit that is the same
+    column, but a model trained on a single class would otherwise return that
+    class's probability of 1.0 as though it meant "certainly low" — even when
+    the only class present is "not low".
+    """
+    frame = pd.DataFrame(
+        [[days_until_out_of_stock, min_stock]],
+        columns=["days_until_out_of_stock", "min_stock_level"],
+    )
+    proba = model.predict_proba(frame)[0]
+    classes = list(model.classes_)
+
+    if 1 in classes:
+        return float(proba[classes.index(1)])
+    # No "low" class was ever seen in training, so it cannot be predicted.
+    return 0.0
 
 
 def get_days_to_expiry(expiry_date_str: Optional[str]) -> Optional[float]:
@@ -479,12 +569,9 @@ def predict(request: PredictionRequest):
             low_stock_prob = 1.0
         else:
             try:
-                stock_df = pd.DataFrame(
-                    [[days_until_out_of_stock, min_stock]],
-                    columns=["days_until_out_of_stock", "min_stock_level"]
+                low_stock_prob = low_stock_probability_from(
+                    stock_model, days_until_out_of_stock, min_stock
                 )
-                prob = stock_model.predict_proba(stock_df)[0]
-                low_stock_prob = float(prob[1]) if len(prob) > 1 else float(prob[0])
             except Exception:
                 if days_until_out_of_stock < 3:
                     low_stock_prob = 0.95
@@ -496,11 +583,7 @@ def predict(request: PredictionRequest):
                     low_stock_prob = 0.05
 
         # 4. Predicted Refill Date
-        if item.daily_usage > 0:
-            days_to_empty = item.quantity / item.daily_usage
-            refill_date = (datetime.date.today() + datetime.timedelta(days=int(days_to_empty))).isoformat()
-        else:
-            refill_date = "N/A"
+        refill_date = calculate_refill_date(item.quantity, item.daily_usage)
 
         predictions[item.id] = {
             "demand_forecast": demand_forecast,

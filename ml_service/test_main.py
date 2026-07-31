@@ -313,3 +313,137 @@ class TestModelCache:
         main = load_main(monkeypatch, token=None, cache_dir=tmp_path)
         res = TestClient(main.app).post("/predict", json={"items": [item()]})
         assert res.status_code == 200
+
+
+# --- refill date horizon ---------------------------------------------------
+# `date + timedelta` raises OverflowError once the offset pushes past year
+# 9999, which previously 500'd the whole request and took every other item's
+# forecast down with it. These pin the guard on both sides of the horizon.
+
+
+class TestRefillDateHorizon:
+    @pytest.fixture
+    def mod(self, monkeypatch, tmp_path):
+        return load_main(monkeypatch, token=None, cache_dir=tmp_path)
+
+    def test_projects_when_stock_runs_out(self, mod):
+        expected = (datetime.date.today() + datetime.timedelta(days=10)).isoformat()
+        assert mod.calculate_refill_date(10, 1) == expected
+
+    def test_truncates_rather_than_rounding(self, mod):
+        # 10 / 3 = 3.33 -> 3, landing on or before the day stock runs out.
+        expected = (datetime.date.today() + datetime.timedelta(days=3)).isoformat()
+        assert mod.calculate_refill_date(10, 3) == expected
+
+    def test_no_date_without_consumption(self, mod):
+        assert mod.calculate_refill_date(10, 0) == mod.NO_REFILL_DATE
+        assert mod.calculate_refill_date(10, -1) == mod.NO_REFILL_DATE
+
+    def test_out_of_stock_refills_today(self, mod):
+        assert mod.calculate_refill_date(0, 1) == datetime.date.today().isoformat()
+
+    def test_exactly_at_the_horizon_still_returns_a_date(self, mod):
+        at = mod.calculate_refill_date(mod.MAX_REFILL_HORIZON_DAYS, 1)
+        assert at != mod.NO_REFILL_DATE
+        datetime.date.fromisoformat(at)
+
+    def test_one_day_past_the_horizon_is_the_sentinel(self, mod):
+        assert mod.calculate_refill_date(mod.MAX_REFILL_HORIZON_DAYS + 1, 1) == mod.NO_REFILL_DATE
+
+    def test_an_extreme_ratio_does_not_raise(self, mod):
+        # Both raised OverflowError before the guard.
+        assert mod.calculate_refill_date(1_000_000, 0.01) == mod.NO_REFILL_DATE
+        assert mod.calculate_refill_date(1e9, 1e-6) == mod.NO_REFILL_DATE
+
+    def test_non_finite_input_is_handled(self, mod):
+        assert mod.calculate_refill_date(float("inf"), 1) == mod.NO_REFILL_DATE
+        assert mod.calculate_refill_date(float("nan"), 1) == mod.NO_REFILL_DATE
+        assert mod.calculate_refill_date(10, float("nan")) == mod.NO_REFILL_DATE
+
+    def test_negative_quantity_is_clamped(self, mod):
+        assert mod.calculate_refill_date(-50, 1) == datetime.date.today().isoformat()
+
+    def test_one_absurd_item_does_not_fail_the_whole_request(self, client, monkeypatch, tmp_path):
+        # The point of the guard: one nonsense item must not cost every other
+        # item in the household its forecast.
+        res = client.post(
+            "/predict",
+            json={
+                "items": [
+                    item(id="sane", quantity=10, daily_usage=1),
+                    item(id="absurd", quantity=1_000_000, daily_usage=0.01),
+                ]
+            },
+        )
+        assert res.status_code == 200
+        preds = res.json()["predictions"]
+        assert preds["absurd"]["refill_date"] == "N/A"
+        assert preds["sane"]["refill_date"] != "N/A"
+        assert len(preds["sane"]["demand_forecast"]) == 7
+
+
+# --- low-stock probability class lookup ------------------------------------
+
+
+class TestLowStockProbabilityClasses:
+    @pytest.fixture
+    def mod(self, monkeypatch, tmp_path):
+        return load_main(monkeypatch, token=None, cache_dir=tmp_path)
+
+    def test_reads_the_positive_class_by_label(self, mod):
+        class TwoClass:
+            classes_ = [0, 1]
+
+            def predict_proba(self, _frame):
+                return [[0.3, 0.7]]
+
+        assert mod.low_stock_probability_from(TwoClass(), 5, 0) == 0.7
+
+    def test_zero_when_no_low_class_was_trained(self, mod):
+        # Indexing position 1 blindly would have returned 1.0 here: "certainly
+        # low" from a model that has never seen a low-stock example.
+        class OnlyNotLow:
+            classes_ = [0]
+
+            def predict_proba(self, _frame):
+                return [[1.0]]
+
+        assert mod.low_stock_probability_from(OnlyNotLow(), 5, 0) == 0.0
+
+    def test_one_when_only_the_low_class_was_trained(self, mod):
+        class OnlyLow:
+            classes_ = [1]
+
+            def predict_proba(self, _frame):
+                return [[1.0]]
+
+        assert mod.low_stock_probability_from(OnlyLow(), 5, 0) == 1.0
+
+
+# --- fitted cache concurrency ----------------------------------------------
+
+
+class TestFittedCacheConcurrency:
+    def test_concurrent_access_is_safe(self, monkeypatch, tmp_path):
+        import threading
+
+        mod = load_main(monkeypatch, token=None, cache_dir=tmp_path)
+        records = history_for(12, item_id="concurrent-item")
+        parsed = [mod.ConsumptionRecord(**r) for r in records]
+        errors = []
+
+        def hammer():
+            try:
+                for _ in range(20):
+                    mod.get_household_demand_model("concurrent-item", parsed)
+            except Exception as exc:  # pragma: no cover - only on a real race
+                errors.append(exc)
+
+        threads = [threading.Thread(target=hammer) for _ in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert errors == []
+        assert len(mod._fitted_cache) <= mod.MAX_FITTED_CACHE_ENTRIES
