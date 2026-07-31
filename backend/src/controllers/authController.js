@@ -1,12 +1,8 @@
 import bcrypt from 'bcrypt';
-import jwt from 'jsonwebtoken';
 import mongoose from 'mongoose';
 import User from '../models/User.js';
-import { getJwtSecret } from '../middleware/auth.js';
-
-// In-memory storage fallback for development when MongoDB is unavailable
-export const devUsers = new Map();
-let nextUserId = 1;
+import { signToken } from '../middleware/auth.js';
+import { devUsers, nextDevUserId, findDevUserById } from '../store/devStore.js';
 
 function isDbConnected() {
   return mongoose.connection.readyState === 1;
@@ -84,15 +80,11 @@ export const register = async (req, res) => {
         return res.status(400).json({ error: 'Email already registered' });
       }
 
-      const userId = `dev_${nextUserId++}`;
-      const user = { id: userId, email, name, password_hash: passwordHash, role: 'Admin', household_id: userId, email_notifications: true };
+      const userId = nextDevUserId();
+      const user = { id: userId, email, name, password_hash: passwordHash, role: 'Admin', household_id: userId, email_notifications: true, is_active: true, token_version: 0 };
       devUsers.set(email, user);
 
-      const token = jwt.sign(
-        { userId, email, role: 'Admin', householdId: userId },
-        getJwtSecret(),
-        { expiresIn: '7d' }
-      );
+      const token = signToken({ userId, email, role: 'Admin', householdId: userId, tokenVersion: 0 });
 
       console.log(`✓ User registered (in-memory): ${email}`);
       return res.status(201).json({
@@ -128,16 +120,13 @@ export const register = async (req, res) => {
     }
 
     // Generate JWT token
-    const token = jwt.sign(
-      { 
-        userId: newUser._id.toString(), 
-        email: newUser.email, 
-        role: newUser.role || 'Admin', 
-        householdId: (newUser.household_id || newUser._id).toString() 
-      },
-      getJwtSecret(),
-      { expiresIn: '7d' }
-    );
+    const token = signToken({
+      userId: newUser._id.toString(),
+      email: newUser.email,
+      role: newUser.role || 'Admin',
+      householdId: (newUser.household_id || newUser._id).toString(),
+      tokenVersion: newUser.token_version || 0,
+    });
 
     res.status(201).json({
       message: 'User registered successfully',
@@ -181,11 +170,19 @@ export const login = async (req, res) => {
         return res.status(401).json({ error: 'Invalid email or password' });
       }
 
-      const token = jwt.sign(
-        { userId: user.id, email: user.email, role: user.role || 'Admin', householdId: user.household_id || user.id },
-        getJwtSecret(),
-        { expiresIn: '7d' }
-      );
+      // Checked *after* the password so this can't be used to probe which
+      // addresses belong to deactivated accounts.
+      if (user.is_active === false) {
+        return res.status(403).json({ error: 'This account has been deactivated. Contact an Admin on your team.' });
+      }
+
+      const token = signToken({
+        userId: user.id,
+        email: user.email,
+        role: user.role || 'Admin',
+        householdId: user.household_id || user.id,
+        tokenVersion: user.token_version || 0,
+      });
 
       console.log(`✓ User logged in (in-memory): ${email}`);
       return res.json({
@@ -208,16 +205,22 @@ export const login = async (req, res) => {
       return res.status(401).json({ error: 'Invalid email or password' });
     }
 
-    const token = jwt.sign(
-      { 
-        userId: user._id.toString(), 
-        email: user.email, 
-        role: user.role || 'Admin', 
-        householdId: (user.household_id || user._id).toString() 
-      },
-      getJwtSecret(),
-      { expiresIn: '7d' }
-    );
+    // A deactivated member must not be able to simply log in again. This was
+    // previously unchecked, which made the whole deactivation feature in
+    // teamController (and the last-Admin safeguard protecting it) cosmetic.
+    // Checked *after* the password so this can't be used to probe which
+    // addresses belong to deactivated accounts.
+    if (user.is_active === false) {
+      return res.status(403).json({ error: 'This account has been deactivated. Contact an Admin on your team.' });
+    }
+
+    const token = signToken({
+      userId: user._id.toString(),
+      email: user.email,
+      role: user.role || 'Admin',
+      householdId: (user.household_id || user._id).toString(),
+      tokenVersion: user.token_version || 0,
+    });
 
     res.json({
       message: 'Login successful',
@@ -251,7 +254,7 @@ function serializeDevUser(user) {
 export const getMe = async (req, res) => {
   try {
     if (!isDbConnected()) {
-      const user = Array.from(devUsers.values()).find((u) => u.id === req.user.userId);
+      const user = findDevUserById(req.user.userId);
       if (!user) {
         return res.status(404).json({ error: 'User not found' });
       }
@@ -282,7 +285,7 @@ export const updateMe = async (req, res) => {
     }
 
     if (!isDbConnected()) {
-      const user = Array.from(devUsers.values()).find((u) => u.id === req.user.userId);
+      const user = findDevUserById(req.user.userId);
       if (!user) {
         return res.status(404).json({ error: 'User not found' });
       }

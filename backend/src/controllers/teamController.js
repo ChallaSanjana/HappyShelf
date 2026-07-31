@@ -1,30 +1,10 @@
 import mongoose from 'mongoose';
 import bcrypt from 'bcrypt';
 import User from '../models/User.js';
-import { devUsers } from './authController.js';
+import { devUsers, findDevUserById } from '../store/devStore.js';
 
 function isDbConnected() {
   return mongoose.connection.readyState === 1;
-}
-
-// A user who registered/logged in while the DB was down gets a token with a
-// synthetic id like "dev_1"/"dev_user_...", which is not a valid Mongo
-// ObjectId or household_id. If the DB comes back up during that token's
-// lifetime, any query built from req.user.householdId would throw a
-// Mongoose CastError (surfacing as an opaque 500). Mirrors the same guard
-// in inventoryController.js.
-function isDevModeId(id) {
-  return typeof id === 'string' && id.startsWith('dev_');
-}
-
-function rejectStaleDevSession(req, res) {
-  if (isDbConnected() && (isDevModeId(req.user.householdId) || isDevModeId(req.user.userId))) {
-    res.status(409).json({
-      error: 'Your session was created while offline. Please log in again.',
-    });
-    return true;
-  }
-  return false;
 }
 
 const ROLES = ['Admin', 'Manager', 'Staff', 'Viewer'];
@@ -77,10 +57,27 @@ function isValidPassword(password) {
   return typeof password === 'string' && password.length >= MIN_PASSWORD_LENGTH;
 }
 
+/**
+ * Whether this update must invalidate the member's outstanding JWTs.
+ *
+ * A token is a snapshot of role + account status taken up to 7 days ago, so
+ * without bumping token_version a demoted Admin keeps admin access, and a
+ * deactivated member keeps *all* access, until their token happens to expire.
+ * A password change is included because the usual reason to reset someone's
+ * password is that their session may be compromised.
+ *
+ * Called with the member's pre-update state, so a no-op write (assigning the
+ * role they already have) doesn't needlessly log them out.
+ */
+function shouldRevokeSessions(member, { role, isActive, password }) {
+  if (password !== undefined) return true;
+  if (role !== undefined && role !== member.role) return true;
+  if (isActive !== undefined && isActive !== (member.is_active !== false)) return true;
+  return false;
+}
+
 export const getTeamMembers = async (req, res) => {
   try {
-    if (rejectStaleDevSession(req, res)) return;
-
     const householdId = req.user.householdId;
 
     if (!isDbConnected()) {
@@ -108,8 +105,6 @@ export const getTeamMembers = async (req, res) => {
 
 export const createTeamMember = async (req, res) => {
   try {
-    if (rejectStaleDevSession(req, res)) return;
-
     const { name, email, password, role } = req.body;
     const householdId = req.user.householdId;
 
@@ -144,6 +139,7 @@ export const createTeamMember = async (req, res) => {
         household_id: householdId,
         avatar_url: null,
         is_active: true,
+        token_version: 0,
       };
       devUsers.set(normalizedEmail, newMember);
 
@@ -188,8 +184,6 @@ export const createTeamMember = async (req, res) => {
 
 export const updateTeamMember = async (req, res) => {
   try {
-    if (rejectStaleDevSession(req, res)) return;
-
     const { name, email, password, avatarUrl, role, isActive } = req.body;
     const memberId = req.params.id;
     const householdId = req.user.householdId;
@@ -234,7 +228,10 @@ export const updateTeamMember = async (req, res) => {
 
     if (!isDbConnected()) {
       // Find member in devUsers
-      const member = Array.from(devUsers.values()).find(u => u.id === memberId && u.household_id === householdId);
+      const member = findDevUserById(memberId);
+      if (member && member.household_id !== householdId) {
+        return res.status(404).json({ error: 'Team member not found' });
+      }
       if (!member) {
         return res.status(404).json({ error: 'Team member not found' });
       }
@@ -282,11 +279,14 @@ export const updateTeamMember = async (req, res) => {
         }
       }
 
+      const devRevoke = shouldRevokeSessions(member, { role, isActive, password });
+
       if (name !== undefined) member.name = name;
       if (avatarUrl !== undefined) member.avatar_url = avatarUrl || null;
       if (password !== undefined) member.password_hash = await bcrypt.hash(password, 10);
       if (role !== undefined) member.role = role;
       if (isActive !== undefined) member.is_active = isActive;
+      if (devRevoke) member.token_version = (member.token_version || 0) + 1;
 
       return res.json({
         message: 'Team member updated successfully (dev mode)',
@@ -343,11 +343,14 @@ export const updateTeamMember = async (req, res) => {
       }
     }
 
+    const revokeSessions = shouldRevokeSessions(member, { role, isActive, password });
+
     if (name !== undefined) member.name = name;
     if (avatarUrl !== undefined) member.avatar_url = avatarUrl || null;
     if (password !== undefined) member.password_hash = await bcrypt.hash(password, 10);
     if (role !== undefined) member.role = role;
     if (isActive !== undefined) member.is_active = isActive;
+    if (revokeSessions) member.token_version = (member.token_version || 0) + 1;
 
     await member.save();
 
@@ -363,8 +366,6 @@ export const updateTeamMember = async (req, res) => {
 
 export const deleteTeamMember = async (req, res) => {
   try {
-    if (rejectStaleDevSession(req, res)) return;
-
     const memberId = req.params.id;
     const householdId = req.user.householdId;
 
@@ -378,7 +379,10 @@ export const deleteTeamMember = async (req, res) => {
     }
 
     if (!isDbConnected()) {
-      const member = Array.from(devUsers.values()).find(u => u.id === memberId && u.household_id === householdId);
+      const member = findDevUserById(memberId);
+      if (member && member.household_id !== householdId) {
+        return res.status(404).json({ error: 'Team member not found' });
+      }
       if (!member) {
         return res.status(404).json({ error: 'Team member not found' });
       }

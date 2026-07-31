@@ -10,6 +10,15 @@ let warnedMissingConfig = false;
 function getTransporter() {
   if (transporter !== undefined) return transporter;
 
+  // Never open a real SMTP connection from the test suite. A developer's
+  // .env usually holds working credentials, so without this every test that
+  // nudges an item into low stock would attempt an actual send — slow, and
+  // it delivers real mail to whoever is in the fixture.
+  if (process.env.NODE_ENV === 'test') {
+    transporter = null;
+    return transporter;
+  }
+
   const { SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS } = process.env;
   if (!SMTP_HOST || !SMTP_USER || !SMTP_PASS) {
     if (!warnedMissingConfig) {
@@ -42,10 +51,18 @@ export async function sendMail({ to, subject, text, html }) {
     return;
   }
 
+  const from = process.env.EMAIL_FROM || process.env.SMTP_USER;
+
   try {
+    // Recipients go in `bcc`, not `to`. Joining them into a visible `to`
+    // header disclosed every household member's address to everyone else on
+    // the team — including members who were only ever added by an Admin and
+    // never consented to sharing it. `to` is set to the sending address so
+    // the message still has a valid, non-empty To header.
     await t.sendMail({
-      from: process.env.EMAIL_FROM || process.env.SMTP_USER,
-      to: recipients.join(','),
+      from,
+      to: from,
+      bcc: recipients,
       subject,
       text,
       html,
