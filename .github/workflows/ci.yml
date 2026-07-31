@@ -23,9 +23,10 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          # 22+: `node --test` only supports glob patterns from this version,
-          # which the backend test script relies on. Node 20 is also past EOL.
-          node-version: 22
+          # 24 (current LTS). Needs to be 22+ for `node --test` glob support,
+          # which the test script relies on; 24 additionally ships npm 11,
+          # matching the npm major that generated package-lock.json.
+          node-version: 24
           cache: npm
           cache-dependency-path: backend/package-lock.json
 
@@ -45,8 +46,12 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          # Matches the backend job; Node 20 is past EOL.
-          node-version: 22
+          # Matches the backend job. npm 11 (shipped with Node 24) is the
+          # major that generated package-lock.json — `npm ci` failed instantly
+          # under npm 10 on Node 22 despite the lockfile installing cleanly
+          # under npm 11. Node 24 is also the branch jsdom/vitest target
+          # (their engines read ^22.13 || >=24).
+          node-version: 24
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 
