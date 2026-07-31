@@ -1,8 +1,12 @@
 name: CI
 
 on:
+  # Every branch, not just main. Filtering pushes to main meant a feature
+  # branch was only ever checked once a pull request existed — so a workflow
+  # whose whole purpose is validating work *before* it merges could not run
+  # until after it had. Same-repo pull requests will run twice as a result;
+  # that is a fair trade for feature branches being covered by default.
   push:
-    branches: [main]
   pull_request:
 
 # A newer push to the same branch makes the in-flight run redundant.
