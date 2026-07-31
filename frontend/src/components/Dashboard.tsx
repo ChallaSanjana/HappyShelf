@@ -13,7 +13,12 @@ import AddMemberForm from './AddMemberForm';
 import { ReorderModal } from './ReorderModal';
 import { ConsumeModal } from './ConsumeModal';
 import { isExpiredOrExpiringSoon } from '../utils/expiry';
+import { getStockStatus, needsRestock } from '../utils/stock';
 import { generateInventoryReportPdf } from '../utils/reportGenerator';
+import { parseImportFile } from '../utils/csvImport';
+import { useToast } from '../contexts/ToastContext';
+import { useHashRoute } from '../hooks/useHashRoute';
+import { useUserSettings } from '../hooks/useUserSettings';
 // stats components
 import UsageTrends from './stats/UsageTrends';
 import StockLevelsChart from './stats/StockLevelsChart';
@@ -34,15 +39,22 @@ import ExpiryForecast from './predictions/ExpiryForecast';
 import PurchaseRecommendations from './predictions/PurchaseRecommendations';
 import SeasonalTrends from './predictions/SeasonalTrends';
 
+/** History window the analytics charts are drawn from. */
+const ANALYTICS_HISTORY_WINDOW = { limit: 2000, days: 365 };
+
 export const Dashboard = () => {
   const { user, logout, updateProfile } = useAuth();
+  const { showToast } = useToast();
   const [items, setItems] = useState<InventoryItem[]>([]);
   const [stats, setStats] = useState<Stats | null>(null);
   const [predictions, setPredictions] = useState<PredictionsResponse | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingItem, setEditingItem] = useState<InventoryItem | null>(null);
   const [isLoading, setIsLoading] = useState(true);
-  const [view, setView] = useState<string>('dashboard');
+  // Backed by the URL hash, so every view is linkable, survives a refresh,
+  // and the browser back button walks through the views actually visited
+  // instead of leaving the app entirely.
+  const [view, setView] = useHashRoute();
   const [teamMembers, setTeamMembers] = useState<TeamMember[]>([]);
   const [actionPlans, setActionPlans] = useState<ActionPlan[]>([]);
   const [isCreatingActionPlan, setIsCreatingActionPlan] = useState(false);
@@ -50,60 +62,10 @@ export const Dashboard = () => {
   const [consumptionHistory, setConsumptionHistory] = useState<ConsumptionHistoryEntry[]>([]);
   const [reorderingItem, setReorderingItem] = useState<InventoryItem | null>(null);
   const [consumingItem, setConsumingItem] = useState<InventoryItem | null>(null);
-  const [settingsState, setSettingsState] = useState({
-    profileName: user?.name || '',
-    emailNotifications: user?.emailNotifications ?? true,
-    weeklySummary: false,
-  });
+  // Loading, per-user caching and the server-owned/local split all live in
+  // useUserSettings now, rather than as four interlocking effects here.
+  const { settings: settingsState, setSettings: setSettingsState } = useUserSettings(user);
   const [isSavingSettings, setIsSavingSettings] = useState(false);
-
-  const skipSaveRef = useRef<{ settings: boolean }>({ settings: true });
-
-  useEffect(() => {
-    skipSaveRef.current = { settings: true };
-  }, [user]);
-
-  // emailNotifications is persisted server-side (it drives real low/out-of-stock
-  // alert emails), so the source of truth on login/refresh is `user`, not the
-  // locally-cached settings blob below — which only covers profileName/weeklySummary.
-  useEffect(() => {
-    if (!user) return;
-    setSettingsState((s) => ({ ...s, emailNotifications: user.emailNotifications ?? true, profileName: user.name }));
-  }, [user]);
-
-  useEffect(() => {
-    if (!user) return;
-    const stKey = `hs:user:${user.id}:settings`;
-    try {
-      const raw = localStorage.getItem(stKey);
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        if (parsed && typeof parsed === 'object') {
-          const { emailNotifications: _ignored, ...rest } = parsed;
-          setSettingsState((s) => ({ ...s, ...rest }));
-        }
-      }
-    } catch {
-      // ignore parse errors
-    }
-  }, [user]);
-
-  useEffect(() => {
-    if (!user) return;
-    if (skipSaveRef.current.settings) {
-      skipSaveRef.current.settings = false;
-      return;
-    }
-    const stKey = `hs:user:${user.id}:settings`;
-    try {
-      // emailNotifications is intentionally omitted here — it lives on the
-      // server (see effect above) so it doesn't need a local cache.
-      const { emailNotifications: _omit, ...toStore } = settingsState;
-      localStorage.setItem(stKey, JSON.stringify(toStore));
-    } catch {
-      // ignore
-    }
-  }, [settingsState, user]);
 
   const role = user?.role || 'Viewer';
 
@@ -135,10 +97,10 @@ export const Dashboard = () => {
   };
 
   const saveSelfProfile = async (member: TeamMember) => {
-    if (!selfProfileForm.name.trim()) return alert('Enter a name');
-    if (!selfProfileForm.email.trim()) return alert('Enter an email');
+    if (!selfProfileForm.name.trim()) return showToast('Enter a name', 'error');
+    if (!selfProfileForm.email.trim()) return showToast('Enter an email', 'error');
     if (selfProfileForm.password && selfProfileForm.password.length < 8) {
-      return alert('New password must be at least 8 characters');
+      return showToast('New password must be at least 8 characters', 'error');
     }
     setIsSavingSelfProfile(true);
     try {
@@ -160,7 +122,7 @@ export const Dashboard = () => {
       setEditingSelfProfile(false);
     } catch (err) {
       const error = err instanceof Error ? err : new Error(String(err));
-      alert(error.message || 'Failed to update your profile');
+      showToast(error.message || 'Failed to update your profile', 'error');
     } finally {
       setIsSavingSelfProfile(false);
     }
@@ -193,7 +155,7 @@ export const Dashboard = () => {
       await fetchActionPlans();
     } catch (err) {
       const error = err instanceof Error ? err : new Error(String(err));
-      alert(error.message || 'Failed to create action plan');
+      showToast(error.message || 'Failed to create action plan', 'error');
     } finally {
       setIsCreatingActionPlan(false);
     }
@@ -211,7 +173,7 @@ export const Dashboard = () => {
       await actionPlanApi.updateTaskStatus(planId, taskId, done);
     } catch (err) {
       const error = err instanceof Error ? err : new Error(String(err));
-      alert(error.message || 'Failed to update task');
+      showToast(error.message || 'Failed to update task', 'error');
       fetchActionPlans();
     }
   };
@@ -223,7 +185,7 @@ export const Dashboard = () => {
       await fetchActionPlans();
     } catch (err) {
       const error = err instanceof Error ? err : new Error(String(err));
-      alert(error.message || 'Failed to delete action plan');
+      showToast(error.message || 'Failed to delete action plan', 'error');
     }
   };
 
@@ -277,15 +239,18 @@ export const Dashboard = () => {
         if (isCurrent()) setPredictions(null);
       }
 
+      // A year of history, so the analytics charts have real records to
+      // plot. The "Recent Reorders"/"Recent Consumption" lists slice the
+      // first 8 off the same result, keeping this to one request per log.
       try {
-        const historyData = await inventoryApi.getReorderHistory();
+        const historyData = await inventoryApi.getReorderHistory(ANALYTICS_HISTORY_WINDOW);
         if (isCurrent()) setReorderHistory(historyData);
       } catch (histError) {
         console.warn('Failed to load reorder history:', histError);
       }
 
       try {
-        const consumptionData = await inventoryApi.getConsumptionHistory();
+        const consumptionData = await inventoryApi.getConsumptionHistory(ANALYTICS_HISTORY_WINDOW);
         if (isCurrent()) setConsumptionHistory(consumptionData);
       } catch (consumptionError) {
         console.warn('Failed to load consumption history:', consumptionError);
@@ -329,8 +294,10 @@ export const Dashboard = () => {
     try {
       await inventoryApi.deleteItem(id);
       await loadData();
-    } catch (error) {
+    } catch (err) {
+      const error = err instanceof Error ? err : new Error(String(err));
       console.error('Failed to delete item:', error);
+      showToast(error.message || 'Failed to delete item', 'error');
     }
   };
 
@@ -344,7 +311,7 @@ export const Dashboard = () => {
 
     // Instant UI update — no need to wait for a full reload
     setItems((prev) => prev.map((it) => (it.id === updatedItem.id ? updatedItem : it)));
-    setReorderHistory((prev) => [historyEntry, ...prev].slice(0, 50));
+    setReorderHistory((prev) => [historyEntry, ...prev].slice(0, ANALYTICS_HISTORY_WINDOW.limit));
     setReorderingItem(null);
 
     // Refresh predictions/stats in the background so forecasts reflect the new stock
@@ -363,7 +330,7 @@ export const Dashboard = () => {
     // lets the Out of Stock badge/alerts/predictions light up immediately
     // once quantity reaches 0, since they all derive from `items` state.
     setItems((prev) => prev.map((it) => (it.id === updatedItem.id ? updatedItem : it)));
-    setConsumptionHistory((prev) => [historyEntry, ...prev].slice(0, 50));
+    setConsumptionHistory((prev) => [historyEntry, ...prev].slice(0, ANALYTICS_HISTORY_WINDOW.limit));
     setConsumingItem(null);
 
     // Refresh predictions/stats in the background so forecasts reflect the new stock
@@ -387,7 +354,7 @@ export const Dashboard = () => {
 
   const handleExport = () => {
     if (!items || items.length === 0) {
-      alert('No items to export');
+      showToast('There is nothing to export yet.', 'info');
       return;
     }
 
@@ -442,211 +409,72 @@ export const Dashboard = () => {
 
   const handleDownloadReport = () => {
     if (!items || items.length === 0) {
-      alert('No inventory data available to generate a report');
+      showToast('Add some inventory before generating a report.', 'info');
       return;
     }
     generateInventoryReportPdf({ items, stats, predictions, consumptionHistory, userName: user?.name });
   };
 
-  // CSV/JSON import helpers
+  // CSV/JSON import. Parsing and row normalisation live in
+  // utils/csvImport.ts so they can be tested directly; this handler only
+  // deals with the file input and reporting the outcome.
 
   const handleImportClick = () => {
     const input = document.getElementById('hs-import-input') as HTMLInputElement | null;
     if (input) input.click();
   };
 
-  const parseCSV = (text: string): Record<string, string>[] => {
-    const lines = text.split(/\r?\n/).filter((l) => l.trim() !== '');
-    if (lines.length === 0) return [];
-
-    // Minimal quoted-field-aware CSV split (handles "a, b", "He said ""hi""")
-    const splitCsvLine = (line: string): string[] => {
-      const result: string[] = [];
-      let current = '';
-      let inQuotes = false;
-      for (let i = 0; i < line.length; i++) {
-        const char = line[i];
-        if (char === '"') {
-          if (inQuotes && line[i + 1] === '"') {
-            current += '"';
-            i++;
-          } else {
-            inQuotes = !inQuotes;
-          }
-        } else if (char === ',' && !inQuotes) {
-          result.push(current);
-          current = '';
-        } else {
-          current += char;
-        }
-      }
-      result.push(current);
-      return result.map((v) => v.trim());
-    };
-
-    // Normalize headers so "Quantity", "quantity", " Quantity " etc. all match
-    const rawHeaders = splitCsvLine(lines[0]);
-    const headers = rawHeaders.map((h) => h.trim().toLowerCase());
-
-    const rows = lines.slice(1).map((line) => {
-      const values = splitCsvLine(line);
-      const obj: Record<string, string> = {};
-      headers.forEach((h, i) => {
-        obj[h] = values[i] ?? '';
-      });
-      return obj;
-    });
-    return rows;
-  };
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const f = e.target.files?.[0];
-    if (!f) return;
-    try {
-      const text = await f.text();
-      let itemsToCreate: Record<string, unknown>[] = [];
-      if (f.type === 'application/json' || f.name.toLowerCase().endsWith('.json')) {
-        const parsed = JSON.parse(text);
-        if (Array.isArray(parsed)) itemsToCreate = parsed as Record<string, unknown>[];
-        else if (parsed.items && Array.isArray(parsed.items)) itemsToCreate = parsed.items as Record<string, unknown>[];
-      } else {
-        // assume CSV
-        itemsToCreate = parseCSV(text);
-      }
+    const file = e.target.files?.[0];
+    if (!file) return;
 
-      if (!itemsToCreate.length) {
-        alert('No items found in the imported file.');
+    try {
+      const text = await file.text();
+      const { items: parsedItems, errors: parseErrors } = parseImportFile(text, file.name, file.type);
+
+      if (parsedItems.length === 0) {
+        showToast(
+          'Nothing could be imported from that file.',
+          'error',
+          parseErrors.slice(0, 10).map((err) => `Row ${err.row}: ${err.error}`)
+        );
         return;
       }
 
-
-
-      let created = 0;
-      const errors: string[] = [];
-      for (const row of itemsToCreate) {
-        // Normalize keys so JSON imports match the same way CSV headers do
-        const normalized: Record<string, unknown> = {};
-        Object.entries(row).forEach(([k, v]) => {
-          normalized[k.trim().toLowerCase()] = v;
-        });
-
-        const rowName =
-          typeof normalized.name === 'string' ? normalized.name :
-            typeof normalized.item === 'string' ? normalized.item :
-              typeof normalized.product === 'string' ? normalized.product : '';
-
-        const rowCategory =
-          typeof normalized.category === 'string' ? normalized.category :
-            typeof normalized.cat === 'string' ? normalized.cat : 'Uncategorized';
-
-        const rowQty = Number(
-          normalized.quantity ?? normalized.qty ?? normalized['stock'] ?? 0
-        ) || 0;
-
-        const rowUsage = Number(
-          normalized.daily_usage ?? normalized.dailyusage ?? normalized['daily usage'] ?? normalized.usage ?? 0
-        ) || 0;
-
-        const rowExpiry =
-          typeof normalized.expiry_date === 'string' ? normalized.expiry_date :
-            typeof normalized.expiry === 'string' ? normalized.expiry :
-              typeof normalized.expirydate === 'string' ? normalized.expirydate :
-                typeof normalized['expiry date'] === 'string' ? (normalized['expiry date'] as string) : null;
-
-        const rowPurchaseDate =
-          typeof normalized.purchase_date === 'string' ? normalized.purchase_date :
-            typeof normalized.purchasedate === 'string' ? normalized.purchasedate :
-              typeof normalized['purchase date'] === 'string' ? (normalized['purchase date'] as string) : null;
-
-        const rowMinStockLevel =
-          normalized.min_stock_level ?? normalized.minstocklevel ?? normalized['min stock level'];
-
-        const rowCostPerUnit =
-          normalized.cost_per_unit ?? normalized.costperunit ?? normalized['cost per unit'] ?? normalized.cost;
-
-        const rowStorageLocation =
-          typeof normalized.storage_location === 'string' ? normalized.storage_location :
-            typeof normalized.storagelocation === 'string' ? normalized.storagelocation :
-              typeof normalized['storage location'] === 'string' ? (normalized['storage location'] as string) : null;
-
-        // Reject unparseable dates instead of letting `new Date(x)` silently
-        // produce NaN downstream — an item with a NaN days-to-expiry never
-        // matches any `<` comparison, so it would vanish from every expiry
-        // alert/waste-tracking view without any error ever surfacing.
-        if (rowExpiry && Number.isNaN(new Date(rowExpiry).getTime())) {
-          errors.push(`${rowName || 'row'}: unrecognized expiry date "${rowExpiry}"; expected YYYY-MM-DD. Item skipped.`);
-          continue;
-        }
-        if (rowPurchaseDate && Number.isNaN(new Date(rowPurchaseDate).getTime())) {
-          errors.push(`${rowName || 'row'}: unrecognized purchase date "${rowPurchaseDate}"; expected YYYY-MM-DD. Item skipped.`);
-          continue;
-        }
-
-        let minStockLevel: number | null = null;
-        if (rowMinStockLevel !== undefined && rowMinStockLevel !== null && String(rowMinStockLevel).trim() !== '') {
-          const parsedMinStock = Number(rowMinStockLevel);
-          if (!Number.isNaN(parsedMinStock)) minStockLevel = parsedMinStock;
-        }
-
-        let costPerUnit: number | null = null;
-        if (rowCostPerUnit !== undefined && rowCostPerUnit !== null && String(rowCostPerUnit).trim() !== '') {
-          const parsedCost = Number(rowCostPerUnit);
-          if (!Number.isNaN(parsedCost)) costPerUnit = parsedCost;
-        }
-
-        const payload: Omit<InventoryItem, 'id' | 'user_id' | 'created_at' | 'updated_at'> = {
-          name: rowName,
-          category: rowCategory,
-          quantity: rowQty,
-          daily_usage: rowUsage,
-          expiry_date: rowExpiry || null,
-          unit: (normalized.unit as InventoryItem['unit']) || 'pcs',
-          purchase_date: rowPurchaseDate || null,
-          min_stock_level: minStockLevel,
-          storage_location: rowStorageLocation || null,
-          cost_per_unit: costPerUnit,
-        };
-
-        if (!payload.name) {
-          errors.push('Missing name for one row; skipped');
-          continue;
-        }
-
-        if (payload.quantity <= 0) {
-          errors.push(`${payload.name}: quantity must be greater than 0 (got "${row.quantity ?? row.qty ?? ''}")`);
-          continue;
-        }
-
-        if (payload.daily_usage <= 0) {
-          errors.push(`${payload.name}: daily usage must be greater than 0 (got "${row.daily_usage ?? row.usage ?? ''}")`);
-          continue;
-        }
-
-        try {
-          await inventoryApi.createItem(payload);
-          created += 1;
-        } catch (err) {
-          const error = err instanceof Error ? err : new Error(String(err));
-          errors.push(`Failed to create ${payload.name}: ${error.message}`);
-        }
-      }
+      // One request for the whole file. This used to be a sequential POST
+      // per row, so a 500-row spreadsheet meant 500 round trips — minutes of
+      // waiting, and a half-imported file if the tab was closed partway.
+      const result = await inventoryApi.bulkCreateItems(parsedItems);
       await loadData();
-      alert(`Import complete. Created ${created} items.${errors.length ? '\nErrors:\n' + errors.join('\n') : ''}`);
+
+      const failures = [
+        ...parseErrors.map((err) => `Row ${err.row}: ${err.error}`),
+        ...result.errors.map((err) => `${err.name || `Row ${err.row}`}: ${err.error}`),
+      ];
+
+      if (failures.length === 0) {
+        showToast(`Imported ${result.created} item${result.created === 1 ? '' : 's'}.`, 'success');
+      } else {
+        showToast(
+          `Imported ${result.created} item${result.created === 1 ? '' : 's'}; ${failures.length} row${failures.length === 1 ? '' : 's'} skipped.`,
+          'warning',
+          failures.slice(0, 10)
+        );
+      }
     } catch (err) {
       const error = err instanceof Error ? err : new Error(String(err));
       console.error('Import failed', error);
-      alert('Import failed: ' + error.message);
+      showToast(`Import failed: ${error.message}`, 'error');
     } finally {
-      // reset input
+      // Reset so re-selecting the same file fires a change event again.
       e.target.value = '';
     }
   };
 
-  const getLowStockItems = () => {
-    return items.filter((item) => {
-      const daysLeft = item.daily_usage > 0 ? item.quantity / item.daily_usage : 999;
-      return daysLeft < 3;
-    });
-  };
+  // needsRestock covers both the "runs out within 3 days" and the "at or
+  // below its configured min_stock_level" cases, so this alert now agrees
+  // with the stat cards, the table badges and the backend's alert emails.
+  const getLowStockItems = () => items.filter(needsRestock);
 
   const getExpiringSoonItems = () => {
     // Includes items that have already expired, not just ones expiring in
@@ -655,13 +483,21 @@ export const Dashboard = () => {
     return items.filter((item) => isExpiredOrExpiringSoon(item.expiry_date, 7));
   };
 
-  const getOutOfStockItems = () => items.filter((i) => (i.quantity ?? 0) <= 0);
+  const getOutOfStockItems = () => items.filter((i) => getStockStatus(i) === 'out');
 
   const supplyConfidence = items.length === 0 ? 0 : Math.max(0, Math.min(100, Math.round(((items.length - getLowStockItems().length - getOutOfStockItems().length) / items.length) * 100)));
-  const completeItemsCount = items.filter(it => (it.daily_usage || 0) > 0 && it.expiry_date).length;
-  const modelConfidence = items.length === 0 ? 0 : Math.max(0, Math.min(100, Math.round(70 + (completeItemsCount / items.length) * 25)));
-  const recyclableCount = items.filter(it => ['produce', 'dairy', 'bakery', 'fruits', 'vegetables'].some(cat => it.category?.toLowerCase().includes(cat))).length;
-  const recyclingRate = items.length === 0 ? 0 : Math.max(0, Math.min(100, Math.round((recyclableCount / items.length) * 100)));
+  // Units actually consumed in the last 30 days — a real activity figure,
+  // replacing a "Recycling Rate" card that was really just the share of items
+  // whose category name contained "produce"/"dairy"/etc. No recycling is
+  // tracked anywhere in the app.
+  const unitsConsumedLast30Days = (() => {
+    const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1000;
+    return Math.round(
+      consumptionHistory
+        .filter((entry) => new Date(entry.createdAt).getTime() >= cutoff)
+        .reduce((sum, entry) => sum + (entry.quantityConsumed || 0), 0)
+    );
+  })();
 
   if (isLoading) {
     return (
@@ -826,7 +662,7 @@ export const Dashboard = () => {
 
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                 <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
-                  <UsageTrends items={items} stats={stats} />
+                  <UsageTrends consumptionHistory={consumptionHistory} />
                 </div>
 
                 <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
@@ -842,7 +678,7 @@ export const Dashboard = () => {
                 </div>
 
                 <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 lg:col-span-2">
-                  <CostAnalytics items={items} stats={stats} />
+                  <CostAnalytics items={items} reorderHistory={reorderHistory} />
                 </div>
 
                 <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 lg:col-span-2">
@@ -884,7 +720,7 @@ export const Dashboard = () => {
                 <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 lg:col-span-2">
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                     <div className="bg-white p-4 rounded">
-                      <DemandForecast items={items} stats={stats} predictions={predictions} />
+                      <DemandForecast items={items} predictions={predictions} />
                     </div>
                     <div className="bg-white p-4 rounded">
                       <LowStockForecast items={items} stats={stats} predictions={predictions} />
@@ -893,7 +729,7 @@ export const Dashboard = () => {
                       <ExpiryForecast items={items} stats={stats} predictions={predictions} />
                     </div>
                     <div className="bg-white p-4 rounded">
-                      <SeasonalTrends items={items} stats={stats} predictions={predictions} />
+                      <SeasonalTrends consumptionHistory={consumptionHistory} />
                     </div>
                   </div>
 
@@ -910,7 +746,7 @@ export const Dashboard = () => {
                             .join(', ') || 'None'
                         }</p>
                         <p><strong>Next peak demand:</strong> {predictions?.model_metadata?.next_peak_demand_date ? new Date(predictions.model_metadata.next_peak_demand_date).toLocaleDateString() : 'N/A'}</p>
-                        <p><strong>Model confidence:</strong> {predictions?.model_metadata?.model_confidence ?? modelConfidence}%</p>
+                        <p><strong>Data completeness:</strong> {predictions?.model_metadata?.model_confidence ?? 0}%</p>
                         <p className="mt-2 text-xs text-gray-500"><strong>Notes:</strong> These outputs are generated by the Python ML service (scikit-learn LinearRegression & DecisionTree models) running live.</p>
                       </div>
                     </div>
@@ -935,7 +771,7 @@ export const Dashboard = () => {
                   <StatCard title="Waste Reduced" value={stats?.totalItems ? Math.max(0, Math.round((stats.totalItems - (stats.expiringSoon || 0)) * 0.1)) : 0} icon={<Leaf className="w-6 h-6" />} color="green" />
                   <StatCard title="Eco Score" value={stats ? Math.max(0, Math.round(((stats.totalItems - (stats.expiringSoon || 0)) / Math.max(1, stats.totalItems)) * 100)) : 0} icon={<Leaf className="w-6 h-6" />} color="green" />
                   <StatCard title="Expiries Prevented" value={stats?.expiringSoon || getExpiringSoonItems().length} icon={<AlertTriangle className="w-6 h-6" />} color="orange" />
-                  <StatCard title="Recycling Rate" value={recyclingRate} icon={<Package className="w-6 h-6" />} color="blue" suffix="%" />
+                  <StatCard title="Used (30 days)" value={unitsConsumedLast30Days} icon={<Package className="w-6 h-6" />} color="blue" suffix=" units" />
                 </div>
               </div>
 
@@ -947,7 +783,7 @@ export const Dashboard = () => {
                       <FoodWasteTracker items={items} stats={stats} />
                     </div>
                     <div className="bg-white p-4 rounded">
-                      <CO2Impact items={items} stats={stats} />
+                      <CO2Impact items={items} consumptionHistory={consumptionHistory} />
                     </div>
                     <div className="bg-white p-4 rounded">
                       <ExpiryToUsageEfficiency items={items} />
@@ -1227,7 +1063,7 @@ export const Dashboard = () => {
                                       fetchTeamMembers();
                                     } catch (err) {
                                       const error = err instanceof Error ? err : new Error(String(err));
-                                      alert(error.message || 'Failed to update member role');
+                                      showToast(error.message || 'Failed to update member role', 'error');
                                     }
                                   }}
                                   className="px-3 py-1 border rounded text-sm"
@@ -1270,7 +1106,7 @@ export const Dashboard = () => {
                                         fetchTeamMembers();
                                       } catch (err) {
                                         const error = err instanceof Error ? err : new Error(String(err));
-                                        alert(error.message || 'Failed to remove team member');
+                                        showToast(error.message || 'Failed to remove team member', 'error');
                                       }
                                     }
                                   }}
@@ -1345,7 +1181,7 @@ export const Dashboard = () => {
                     fetchTeamMembers();
                   } catch (err) {
                     const error = err instanceof Error ? err : new Error(String(err));
-                    alert(error.message || 'Failed to add member');
+                    showToast(error.message || 'Failed to add member', 'error');
                   }
                 }} />
               </div>
@@ -1380,10 +1216,6 @@ export const Dashboard = () => {
                       <input type="checkbox" checked={settingsState.emailNotifications} onChange={(e) => setSettingsState((s) => ({ ...s, emailNotifications: e.target.checked }))} />
                       <span className="text-sm">Email notifications</span>
                     </label>
-                    <label className="flex items-center gap-3">
-                      <input type="checkbox" checked={settingsState.weeklySummary} onChange={(e) => setSettingsState((s) => ({ ...s, weeklySummary: e.target.checked }))} />
-                      <span className="text-sm">Weekly summary</span>
-                    </label>
                   </div>
                 </div>
 
@@ -1397,10 +1229,10 @@ export const Dashboard = () => {
                           name: settingsState.profileName,
                           emailNotifications: settingsState.emailNotifications,
                         });
-                        alert('Settings saved');
+                        showToast('Settings saved.', 'success');
                       } catch (err) {
                         const error = err instanceof Error ? err : new Error(String(err));
-                        alert(error.message || 'Failed to save settings');
+                        showToast(error.message || 'Failed to save settings', 'error');
                       } finally {
                         setIsSavingSettings(false);
                       }

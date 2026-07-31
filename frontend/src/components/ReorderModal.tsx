@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { InventoryItem } from '../services/api';
 import { getSuggestedReorderQuantity } from '../utils/reorder';
 import { X, Package } from 'lucide-react';
+import { useModalDismiss } from '../hooks/useModalDismiss';
 
 interface ReorderModalProps {
     item: InventoryItem;
@@ -10,6 +11,9 @@ interface ReorderModalProps {
 }
 
 export const ReorderModal = ({ item, onConfirm, onClose }: ReorderModalProps) => {
+    // Escape closes the dialog and the page behind it stops scrolling.
+    useModalDismiss(onClose);
+
     const suggested = getSuggestedReorderQuantity(item);
     const [quantity, setQuantity] = useState(suggested.toString());
     const [error, setError] = useState('');
@@ -42,10 +46,15 @@ export const ReorderModal = ({ item, onConfirm, onClose }: ReorderModalProps) =>
     };
 
     return (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+        <div
+            className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="reorder-modal-title"
+        >
             <div className="bg-white rounded-xl shadow-xl w-full max-w-sm">
                 <div className="flex justify-between items-center p-6 border-b border-gray-200">
-                    <h2 className="text-xl font-semibold text-gray-800">Reorder Item</h2>
+                    <h2 id="reorder-modal-title" className="text-xl font-semibold text-gray-800">Reorder Item</h2>
                     <button onClick={onClose} className="text-gray-400 hover:text-gray-600 transition">
                         <X className="w-6 h-6" />
                     </button>

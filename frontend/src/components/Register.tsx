@@ -60,8 +60,11 @@ export const Register = ({ onToggle }: RegisterProps) => {
 
         <form onSubmit={handleSubmit} className="space-y-6">
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">Full Name</label>
+            <label className="block text-sm font-medium text-gray-700 mb-2" htmlFor="register-full-name">
+              Full Name
+            </label>
             <input
+              id="register-full-name"
               type="text"
               value={name}
               onChange={(e) => setName(e.target.value)}
@@ -72,8 +75,11 @@ export const Register = ({ onToggle }: RegisterProps) => {
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">Email</label>
+            <label className="block text-sm font-medium text-gray-700 mb-2" htmlFor="register-email">
+              Email
+            </label>
             <input
+              id="register-email"
               type="email"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
@@ -84,8 +90,11 @@ export const Register = ({ onToggle }: RegisterProps) => {
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">Password</label>
+            <label className="block text-sm font-medium text-gray-700 mb-2" htmlFor="register-password">
+              Password
+            </label>
             <input
+              id="register-password"
               type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
