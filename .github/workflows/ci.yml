@@ -57,27 +57,7 @@ jobs:
 
       - name: Install
         working-directory: frontend
-        run: |
-          # npm's own output is only in the run log, which needs an
-          # authenticated token to read. Echoing the tail as ::error::
-          # workflow commands surfaces it as check annotations instead,
-          # which are readable on a public repo without credentials.
-          set +e
-          npm ci > /tmp/npm-ci.log 2>&1
-          code=$?
-          if [ "$code" -ne 0 ]; then
-            echo "::error::npm ci exited with $code"
-            echo "::error::npm=$(npm --version) node=$(node --version)"
-            # On EUSAGE npm dumps its whole options list, so the tail is
-            # useless -- the actual reason is near the top, plus any
-            # Missing:/Invalid: lines naming the offending packages.
-            grep -E "npm (error|warn) (code|Missing:|Invalid:)" /tmp/npm-ci.log | head -20 \
-              | while IFS= read -r line; do printf '::error::%s\n' "$line"; done
-            head -12 /tmp/npm-ci.log \
-              | while IFS= read -r line; do printf '::error::HEAD %s\n' "$line"; done
-            exit "$code"
-          fi
-          cat /tmp/npm-ci.log
+        run: npm ci
 
       - name: Typecheck
         working-directory: frontend
