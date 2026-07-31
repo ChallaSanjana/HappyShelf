@@ -2,7 +2,12 @@ import mongoose from 'mongoose';
 
 const itemSchema = new mongoose.Schema(
   {
-    user_id: {
+    // The household this item belongs to, not an individual user. It was
+    // named user_id while it already held a household id, which invited
+    // exactly the kind of scoping mistake that leaks data between
+    // households. Existing documents are renamed by
+    // scripts/migrate-item-household-id.js.
+    household_id: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User',
       required: true,
@@ -74,7 +79,10 @@ itemSchema.set('toJSON', {
   virtuals: true,
   transform: function (doc, ret) {
     ret.id = ret._id.toString();
-    ret.user_id = ret.user_id.toString();
+    // camelCase over the wire, matching User, ActionPlan and the history
+    // models, which all expose householdId.
+    ret.householdId = ret.household_id.toString();
+    delete ret.household_id;
     delete ret._id;
     delete ret.__v;
     return ret;

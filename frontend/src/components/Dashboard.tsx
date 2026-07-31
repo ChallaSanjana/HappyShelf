@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useAuth } from '../contexts/AuthContext';
-import { inventoryApi, teamApi, TeamMember, InventoryItem, Stats, PredictionsResponse, actionPlanApi, ActionPlan, ReorderHistoryEntry, ConsumptionHistoryEntry } from '../services/api';
+import { inventoryApi, teamApi, TeamMember, InventoryItem, NewInventoryItem, Stats, PredictionsResponse, actionPlanApi, ActionPlan, ReorderHistoryEntry, ConsumptionHistoryEntry } from '../services/api';
 import { calculateMetrics } from '../utils/metricsCalculator';
 import { StatCard } from './StatCard';
 import { InventoryExplorer } from './InventoryExplorer';
@@ -359,7 +359,7 @@ export const Dashboard = () => {
       if (editingItem) {
         await inventoryApi.updateItem(editingItem.id, itemData);
       } else {
-        await inventoryApi.createItem(itemData as Omit<InventoryItem, 'id' | 'user_id' | 'created_at' | 'updated_at'>);
+        await inventoryApi.createItem(itemData as NewInventoryItem);
       }
       await loadData();
       setIsModalOpen(false);

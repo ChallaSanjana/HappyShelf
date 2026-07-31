@@ -42,7 +42,9 @@ export default defineConfig({
     {
       command: 'npm start',
       cwd: '../backend',
-      port: BACKEND_PORT,
+      // A URL probe rather than a port check: the port is listening before
+      // the app finishes wiring up, and "socket open" is not "ready".
+      url: `http://127.0.0.1:${BACKEND_PORT}/api/health`,
       reuseExistingServer: false,
       timeout: 60_000,
       stdout: 'pipe',
@@ -68,7 +70,11 @@ export default defineConfig({
       // and Playwright's readiness probe and baseURL both use IPv4, which
       // then gets ECONNREFUSED even though the server is up.
       command: `npm run dev -- --port ${FRONTEND_PORT} --strictPort --host 127.0.0.1`,
-      port: FRONTEND_PORT,
+      // Same reasoning, and it matters more here: Vite binds the port well
+      // before it has finished optimising dependencies and can serve the
+      // app, so a port check let the first test navigate to a page that
+      // never rendered.
+      url: BASE_URL,
       reuseExistingServer: false,
       timeout: 60_000,
       stdout: 'pipe',

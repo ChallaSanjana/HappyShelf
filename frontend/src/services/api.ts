@@ -4,7 +4,7 @@ export { API_URL, ApiError } from './httpClient';
 
 export interface InventoryItem {
   id: string;
-  user_id: string;
+  householdId: string;
   name: string;
   category: string;
   quantity: number;
@@ -19,7 +19,7 @@ export interface InventoryItem {
   updated_at: string;
 }
 
-export type NewInventoryItem = Omit<InventoryItem, 'id' | 'user_id' | 'created_at' | 'updated_at'>;
+export type NewInventoryItem = Omit<InventoryItem, 'id' | 'householdId' | 'created_at' | 'updated_at'>;
 
 export interface Stats {
   totalItems: number;
