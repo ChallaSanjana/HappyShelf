@@ -1,6 +1,7 @@
 import { InventoryItem } from '../services/api';
 import { Pencil, Trash2 } from 'lucide-react';
 import { getDaysToExpiry } from '../utils/expiry';
+import { getDaysLeft, getStockStatus } from '../utils/stock';
 
 const getCategoryColor = (category: string): string => {
   const colors: Record<string, string> = {
@@ -34,19 +35,25 @@ type ExpiryStatus = 'expired' | 'critical' | 'warning' | 'good' | 'none';
 
 export const InventoryTable = ({ items, onEdit, onDelete, onReorder, onConsume, readOnly = false }: InventoryTableProps) => {
   const calculateDaysLeft = (item: InventoryItem) => {
-    if (item.daily_usage <= 0) return 'N/A';
-    return (item.quantity / item.daily_usage).toFixed(1);
+    const daysLeft = getDaysLeft(item);
+    return Number.isFinite(daysLeft) ? daysLeft.toFixed(1) : 'N/A';
   };
 
-  // Stock status depends only on quantity/daily_usage — completely
-  // independent of expiry. This is what a reorder actually affects, so it's
-  // the badge that should visibly change immediately after restocking.
-  const getStockStatus = (item: InventoryItem): StockStatus => {
-    if ((item.quantity ?? 0) <= 0) return 'out';
-    const daysLeft = item.daily_usage > 0 ? item.quantity / item.daily_usage : 999;
-    if (daysLeft < 3) return 'critical';
-    if (daysLeft < 7) return 'warning';
-    return 'good';
+  // Stock status depends only on quantity/daily_usage/min_stock_level —
+  // completely independent of expiry. This is what a reorder actually
+  // affects, so it's the badge that should visibly change immediately after
+  // restocking.
+  //
+  // The out/low decision is delegated to the shared getStockStatus in
+  // utils/stock.ts so this badge can't drift from the dashboard counts or
+  // the backend's alert emails. The extra "warning" tier is display-only:
+  // a heads-up band between "low" and "good" that exists on this table
+  // alone, so it stays local.
+  const getBadgeStatus = (item: InventoryItem): StockStatus => {
+    const shared = getStockStatus(item);
+    if (shared === 'out') return 'out';
+    if (shared === 'low') return 'critical';
+    return getDaysLeft(item) < 7 ? 'warning' : 'good';
   };
 
   // Expiry status depends only on expiry_date — reordering never changes
@@ -123,7 +130,7 @@ export const InventoryTable = ({ items, onEdit, onDelete, onReorder, onConsume, 
         </thead>
         <tbody className="bg-white divide-y divide-gray-200">
           {items.map((item) => {
-            const stockStatus = getStockStatus(item);
+            const stockStatus = getBadgeStatus(item);
             const expiryStatus = getExpiryStatus(item);
             return (
               <tr key={item.id} className="hover:bg-gray-50 transition">
@@ -170,24 +177,37 @@ export const InventoryTable = ({ items, onEdit, onDelete, onReorder, onConsume, 
                 </td>
                 {!readOnly && (
                   <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
-                    <button onClick={() => onEdit(item)} className="text-green-600 hover:text-green-900 mr-3">
-                      <Pencil className="w-4 h-4" />
-                    </button>
                     <button
-                      onClick={() => onReorder ? onReorder(item) : alert('Reorder not available')}
-                      className="text-blue-600 hover:text-blue-900 mr-3"
+                      onClick={() => onEdit(item)}
+                      className="text-green-600 hover:text-green-900 mr-3"
+                      aria-label={`Edit ${item.name}`}
+                    >
+                      <Pencil className="w-4 h-4" aria-hidden="true" />
+                    </button>
+                    {/* Disabled rather than alerting when no handler is wired
+                        up — an unusable control should look unusable. */}
+                    <button
+                      onClick={() => onReorder?.(item)}
+                      disabled={!onReorder}
+                      className="text-blue-600 hover:text-blue-900 mr-3 disabled:opacity-40 disabled:cursor-not-allowed"
+                      aria-label={`Reorder ${item.name}`}
                     >
                       Reorder
                     </button>
                     <button
-                      onClick={() => onConsume ? onConsume(item) : alert('Consume not available')}
-                      disabled={(item.quantity ?? 0) <= 0}
+                      onClick={() => onConsume?.(item)}
+                      disabled={!onConsume || (item.quantity ?? 0) <= 0}
                       className="text-orange-600 hover:text-orange-900 mr-3 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:text-orange-600"
+                      aria-label={`Consume ${item.name}`}
                     >
                       Consume
                     </button>
-                    <button onClick={() => onDelete(item.id)} className="text-red-600 hover:text-red-900">
-                      <Trash2 className="w-4 h-4" />
+                    <button
+                      onClick={() => onDelete(item.id)}
+                      className="text-red-600 hover:text-red-900"
+                      aria-label={`Delete ${item.name}`}
+                    >
+                      <Trash2 className="w-4 h-4" aria-hidden="true" />
                     </button>
                   </td>
                 )}

@@ -9,33 +9,13 @@
 // an aggregation. Household-scoped arrays are small (a home's inventory,
 // not a multi-tenant table), so a single indexed `find({ user_id })` plus
 // in-process filtering is the efficient option here, not a shortcut.
+//
+// Status derivation lives in inventoryMetrics.js so this filter can't drift
+// from the dashboard stats and alert emails, as it previously had.
 
-function getDaysLeft(item) {
-  return item.daily_usage > 0 ? item.quantity / item.daily_usage : Infinity;
-}
+import { getStockStatus, getExpiryStatus } from './inventoryMetrics.js';
 
-// Three buckets (not the 4-tier badge InventoryTable renders) to match the
-// filter UI and the "low stock" threshold already used app-wide (Dashboard's
-// getLowStockItems(), stats.lowStockItems, reportGenerator's getItemStatus).
-export function getStockStatus(item) {
-  if ((item.quantity ?? 0) <= 0) return 'out';
-  return getDaysLeft(item) < 3 ? 'low' : 'healthy';
-}
-
-function getDaysToExpiry(expiryDate) {
-  if (!expiryDate) return null;
-  return Math.ceil((new Date(expiryDate).getTime() - Date.now()) / (1000 * 60 * 60 * 24));
-}
-
-// Mirrors frontend/src/utils/expiry.ts's isExpiredOrExpiringSoon(..., 7)
-// window so this filter agrees with every other "Expiring Soon" surface.
-export function getExpiryStatus(item) {
-  const days = getDaysToExpiry(item.expiry_date);
-  if (days === null) return 'none';
-  if (days < 0) return 'expired';
-  if (days < 7) return 'expiring_soon';
-  return 'healthy';
-}
+export { getStockStatus, getExpiryStatus };
 
 function getTotalValue(item) {
   return (item.quantity || 0) * (item.cost_per_unit || 0);

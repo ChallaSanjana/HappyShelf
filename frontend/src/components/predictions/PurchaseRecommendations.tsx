@@ -1,12 +1,13 @@
 import React from 'react';
 import { InventoryItem, PredictionsResponse } from '../../services/api';
+import { getDaysLeft } from '../../utils/stock';
 
 type Props = { items: InventoryItem[]; predictions: PredictionsResponse | null };
 
 const PurchaseRecommendations: React.FC<Props> = ({ items, predictions }) => {
   const recs = items
     .map((it) => {
-      const score = (it.daily_usage || 0) > 0 ? (it.quantity || 0) / it.daily_usage : Infinity;
+      const score = getDaysLeft(it);
       let mlRefillDate = 'N/A';
       if (predictions?.predictions) {
         const itemPred = predictions.predictions[it.id];

@@ -7,6 +7,9 @@ pnpm-debug.log*
 lerna-debug.log*
 __pycache__/
 *.pyc
+# Fitted scikit-learn artifacts — regenerated from the training CSVs on first
+# boot and keyed by their fingerprint, so they never belong in version control.
+ml_service/model_cache/
 node_modules
 dist
 dist-ssr

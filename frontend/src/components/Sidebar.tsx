@@ -10,42 +10,58 @@ import {
   Settings,
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
+import { View, DEFAULT_VIEW } from '../hooks/useHashRoute';
 
 interface Props {
   mobileOpen?: boolean;
   onClose?: () => void;
   /** Optional callback when a menu item is activated. If omitted, sidebar will only track active item locally. */
-  onNavigate?: (key: string) => void;
+  onNavigate?: (key: View) => void;
   /**
    * Which item to highlight, driven by the parent's actual current view.
    * Without this the sidebar's highlight is self-managed and only updates on
    * a sidebar click — any navigation that bypasses the sidebar (e.g. a logo
    * click, a deep link) leaves it pointing at the wrong item.
    */
-  activeKey?: string;
+  activeKey?: View;
 }
 
 type MenuItemType = {
-  key: string;
+  // Typed against the route union rather than plain string, so a key here
+  // that has no matching route (or vice versa) is a compile error instead
+  // of a nav item that silently bounces back to the dashboard.
+  key: View;
   label: string;
   icon: React.ReactNode;
-  href?: string; // optional URL
   category: string;
 };
 
 const items: MenuItemType[] = [
-  { key: 'dashboard', label: 'Dashboard', icon: <Home className="w-5 h-5" />, category: 'Main', href: '/' },
-  { key: 'inventory', label: 'Inventory', icon: <Box className="w-5 h-5" />, category: 'Main', href: '/inventory' },
-  { key: 'stats', label: 'Statistics', icon: <BarChart2 className="w-5 h-5" />, category: 'Insights', href: '/stats' },
-  { key: 'predictions', label: 'Predictions', icon: <Clock className="w-5 h-5" />, category: 'Insights', href: '/predictions' },
-  { key: 'alerts', label: 'Alerts', icon: <Bell className="w-5 h-5" />, category: 'Main', href: '/alerts' },
-  { key: 'sustainability', label: 'Sustainability', icon: <Leaf className="w-5 h-5" />, category: 'Insights', href: '/sustainability' },
-  { key: 'team', label: 'Team', icon: <Users className="w-5 h-5" />, category: 'Admin', href: '/team' },
-  { key: 'settings', label: 'Settings', icon: <Settings className="w-5 h-5" />, category: 'Admin', href: '/settings' },
+  { key: 'dashboard', label: 'Dashboard', icon: <Home className="w-5 h-5" />, category: 'Main' },
+  { key: 'inventory', label: 'Inventory', icon: <Box className="w-5 h-5" />, category: 'Main' },
+  { key: 'stats', label: 'Statistics', icon: <BarChart2 className="w-5 h-5" />, category: 'Insights' },
+  { key: 'predictions', label: 'Predictions', icon: <Clock className="w-5 h-5" />, category: 'Insights' },
+  { key: 'alerts', label: 'Alerts', icon: <Bell className="w-5 h-5" />, category: 'Main' },
+  { key: 'sustainability', label: 'Sustainability', icon: <Leaf className="w-5 h-5" />, category: 'Insights' },
+  { key: 'team', label: 'Team', icon: <Users className="w-5 h-5" />, category: 'Admin' },
+  { key: 'settings', label: 'Settings', icon: <Settings className="w-5 h-5" />, category: 'Admin' },
 ];
 
+/**
+ * The link target for a nav item, derived from its key so the two can't
+ * drift apart.
+ *
+ * These were previously hand-written *path* URLs ("/inventory") which the
+ * click handler pushed with history.pushState. That fought with the hash
+ * routing that actually drives the app: navigating set the hash, then the
+ * pushState immediately overwrote the URL and dropped it, so the queued
+ * hashchange read an empty hash and bounced the view straight back to the
+ * dashboard. Hash targets let the browser do the navigation natively.
+ */
+const hrefFor = (key: View) => `#/${key}`;
+
 export const Sidebar: React.FC<Props> = ({ mobileOpen = false, onClose, onNavigate, activeKey }) => {
-  const [localActive, setLocalActive] = React.useState<string>('dashboard');
+  const [localActive, setLocalActive] = React.useState<View>(DEFAULT_VIEW);
   // Controlled by the parent when activeKey is supplied; falls back to local
   // state so the sidebar still works standalone (e.g. in isolation/tests).
   const active = activeKey ?? localActive;
@@ -76,7 +92,7 @@ export const Sidebar: React.FC<Props> = ({ mobileOpen = false, onClose, onNaviga
     return Array.from(map.entries()); // [ [category, items[]], ... ]
   }, [filteredItems]);
 
-  const activate = (key: string) => {
+  const activate = (key: View) => {
     setLocalActive(key);
     if (onNavigate) onNavigate(key);
   };
@@ -84,63 +100,37 @@ export const Sidebar: React.FC<Props> = ({ mobileOpen = false, onClose, onNaviga
   const MenuItem = ({ item }: { item: MenuItemType }) => {
     const isActive = item.key === active;
 
-    const handleClick = (e?: React.MouseEvent) => {
-      e?.preventDefault();
-      activate(item.key);
-      // If href exists, navigate via history API so single-page apps work without react-router
-      if (item.href) {
-        try {
-          const url = new URL(item.href, window.location.origin);
-          window.history.pushState({}, '', url.pathname + url.search + url.hash);
-          // dispatch a popstate so other parts of the app can react
-          window.dispatchEvent(new PopStateEvent('popstate'));
-        } catch {
-          // fallback to full navigation
-          window.location.href = item.href as string;
-        }
-      }
-      if (onClose) onClose();
-    };
+    const handleClick = (e: React.MouseEvent) => {
+      // Let the browser handle modified clicks (new tab, new window) — the
+      // href is a real hash target, so those work without any help from us.
+      if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
 
-    const handleKeyDown = (e: React.KeyboardEvent) => {
-      if (e.key === 'Enter' || e.key === ' ') {
-        e.preventDefault();
-        handleClick();
-      }
+      // Otherwise take over: activate() updates the app's view state and the
+      // hash together, so there's nothing left for the default action to do.
+      e.preventDefault();
+      activate(item.key);
+      if (onClose) onClose();
     };
 
     const baseClasses = `w-full text-left flex items-center gap-3 px-4 py-2 rounded-lg transition-colors cursor-pointer pointer-events-auto ${
       isActive ? 'bg-blue-50 text-blue-600' : 'text-gray-700 hover:bg-gray-100'
     }`;
 
-    // Render as anchor if href provided, otherwise button
-    if (item.href) {
-      return (
-        <a
-          href={item.href}
-          onClick={handleClick}
-          onKeyDown={handleKeyDown}
-          role="menuitem"
-          tabIndex={0}
-          className={baseClasses}
-          aria-current={isActive ? 'page' : undefined}
-        >
-          <div className="flex-shrink-0">{item.icon}</div>
-          <div className="flex-1">{item.label}</div>
-        </a>
-      );
-    }
-
+    // A real anchor, so keyboard activation, focus order, middle-click and
+    // "copy link address" all come from the browser rather than being
+    // reimplemented (the old onKeyDown handler existed only because these
+    // were behaving like buttons).
     return (
-      <button
+      <a
+        href={hrefFor(item.key)}
         onClick={handleClick}
-        onKeyDown={handleKeyDown}
         role="menuitem"
         className={baseClasses}
+        aria-current={isActive ? 'page' : undefined}
       >
         <div className="flex-shrink-0">{item.icon}</div>
         <div className="flex-1">{item.label}</div>
-      </button>
+      </a>
     );
   };
 

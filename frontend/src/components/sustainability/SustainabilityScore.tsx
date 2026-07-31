@@ -1,14 +1,14 @@
 import React from 'react';
 import { InventoryItem, Stats } from '../../services/api';
-import { isExpiredOrExpiringSoon } from '../../utils/expiry';
+import { isWasted } from '../../utils/sustainability';
 
 type Props = { items: InventoryItem[]; stats: Stats | null };
 
 const SustainabilityScore: React.FC<Props> = ({ items }) => {
-  // rudimentary score: fewer wasted and more recycling -> higher score
-  // "Wasted" matches FoodWasteTracker: out of stock OR already past its
-  // expiry date, not just quantity <= 0.
-  const wasted = items.filter((it) => (it.quantity ?? 0) <= 0 || isExpiredOrExpiringSoon(it.expiry_date, 0)).length;
+  // Share of current stock that isn't wasted. "Wasted" comes from
+  // utils/sustainability.ts, shared with the waste tracker, the CO2 chart
+  // and the PDF report.
+  const wasted = items.filter(isWasted).length;
   const total = Math.max(1, items.length);
   const score = Math.max(0, Math.round(((total - wasted) / total) * 100));
 
@@ -16,7 +16,11 @@ const SustainabilityScore: React.FC<Props> = ({ items }) => {
     <div className="text-center">
       <h4 className="text-md font-medium mb-2">Sustainability Score</h4>
       <div className="text-3xl font-bold text-green-600">{score}</div>
-      <div className="text-sm text-gray-600">Higher is better — based on recent waste & expiry metrics</div>
+      <div className="text-sm text-gray-600">
+        {items.length === 0
+          ? 'Add items to start tracking'
+          : `${total - wasted} of ${total} items in good standing`}
+      </div>
     </div>
   );
 };

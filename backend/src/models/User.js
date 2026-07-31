@@ -44,6 +44,16 @@ const userSchema = new mongoose.Schema(
       type: Boolean,
       default: true,
     },
+    // Bumped whenever a change should invalidate this user's outstanding
+    // JWTs — a role change, a deactivation, or a password reset. Every token
+    // carries the version it was signed with (`tv`), and authenticateToken
+    // rejects any token whose `tv` no longer matches. Without this, a demoted
+    // or deactivated member keeps their original access until their 7-day
+    // token happens to expire.
+    token_version: {
+      type: Number,
+      default: 0,
+    },
   },
   {
     timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' },
@@ -80,6 +90,8 @@ userSchema.set('toJSON', {
     delete ret.email_notifications;
     delete ret.__v;
     delete ret.password_hash;
+    // Internal revocation counter — never needs to reach a client.
+    delete ret.token_version;
     return ret;
   },
 });

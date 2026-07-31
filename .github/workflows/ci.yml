@@ -1,0 +1,96 @@
+name: CI
+
+on:
+  # Every branch, not just main. Filtering pushes to main meant a feature
+  # branch was only ever checked once a pull request existed — so a workflow
+  # whose whole purpose is validating work *before* it merges could not run
+  # until after it had. Same-repo pull requests will run twice as a result;
+  # that is a fair trade for feature branches being covered by default.
+  push:
+  pull_request:
+
+# A newer push to the same branch makes the in-flight run redundant.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # 24 (current LTS). Needs to be 22+ for `node --test` glob support,
+          # which the test script relies on; 24 additionally ships npm 11,
+          # matching the npm major that generated package-lock.json.
+          node-version: 24
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Install
+        working-directory: backend
+        run: npm ci
+
+      - name: Test
+        working-directory: backend
+        run: npm test
+
+  frontend:
+    name: Frontend
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # Matches the backend job. npm 11 (shipped with Node 24) is the
+          # major that generated package-lock.json — `npm ci` failed instantly
+          # under npm 10 on Node 22 despite the lockfile installing cleanly
+          # under npm 11. Node 24 is also the branch jsdom/vitest target
+          # (their engines read ^22.13 || >=24).
+          node-version: 24
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install
+        working-directory: frontend
+        run: npm ci
+
+      - name: Typecheck
+        working-directory: frontend
+        run: npm run typecheck
+
+      - name: Lint
+        working-directory: frontend
+        run: npm run lint
+
+      - name: Test
+        working-directory: frontend
+        run: npm test
+
+      - name: Build
+        working-directory: frontend
+        run: npm run build
+
+  ml_service:
+    name: ML service
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: ml_service/requirements.txt
+
+      - name: Install
+        working-directory: ml_service
+        run: pip install -r requirements.txt
+
+      - name: Test
+        working-directory: ml_service
+        run: pytest -q

@@ -20,5 +20,7 @@
     "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true
   },
-  "include": ["src"]
+  "include": ["src"],
+  /* Tests are typechecked by tsconfig.test.json, which adds Node types. */
+  "exclude": ["src/**/*.test.ts", "src/**/*.test.tsx", "src/test"]
 }

@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useToast } from '../contexts/ToastContext';
 
 interface AddMemberFormProps {
   onAdd: (name: string, email: string, password: string, role: string) => void;
@@ -10,6 +11,7 @@ interface AddMemberFormProps {
 }
 
 export default function AddMemberForm({ onAdd, assignableRoles }: AddMemberFormProps) {
+  const { showToast } = useToast();
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -54,9 +56,11 @@ export default function AddMemberForm({ onAdd, assignableRoles }: AddMemberFormP
         <div className="sm:col-span-2 text-right mt-2">
           <button
             onClick={() => {
-              if (!name.trim()) return alert('Enter a name');
-              if (!email.trim()) return alert('Enter an email');
-              if (!password || password.length < 8) return alert('Enter a password with at least 8 characters');
+              if (!name.trim()) return showToast('Enter a name', 'error');
+              if (!email.trim()) return showToast('Enter an email', 'error');
+              if (!password || password.length < 8) {
+                return showToast('Enter a password with at least 8 characters', 'error');
+              }
               onAdd(name.trim(), email.trim(), password, role);
               setName('');
               setEmail('');

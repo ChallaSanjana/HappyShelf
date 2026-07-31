@@ -1,4 +1,6 @@
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
+import { apiRequest } from './httpClient';
+
+export { API_URL, ApiError } from './httpClient';
 
 export interface InventoryItem {
   id: string;
@@ -17,9 +19,14 @@ export interface InventoryItem {
   updated_at: string;
 }
 
+export type NewInventoryItem = Omit<InventoryItem, 'id' | 'user_id' | 'created_at' | 'updated_at'>;
+
 export interface Stats {
   totalItems: number;
+  /** Items needing restock attention — both 'low' and already 'out'. */
   lowStockItems: number;
+  outOfStockItems: number;
+  /** Expiring within 7 days *or already expired*. */
   expiringSoon: number;
   categoryCounts: Record<string, number>;
   predictedSavings: number;
@@ -78,100 +85,127 @@ export interface ConsumptionHistoryEntry {
   updatedAt?: string;
 }
 
-const getAuthHeaders = () => {
-  const token = localStorage.getItem('token');
-  return {
-    'Content-Type': 'application/json',
-    Authorization: `Bearer ${token}`,
-  };
-};
+/** Per-row failure from a bulk import — `row` is 1-based to match a spreadsheet. */
+export interface BulkImportError {
+  row: number;
+  name: string | null;
+  error: string;
+}
 
-async function parseErrorMessage(response: Response, fallback: string): Promise<string> {
-  try {
-    const data = await response.json();
-    return data.error || fallback;
-  } catch {
-    return fallback;
-  }
+export interface BulkImportResult {
+  message: string;
+  created: number;
+  items: InventoryItem[];
+  errors: BulkImportError[];
+}
+
+/**
+ * Window for a history request. Both default server-side to the previous
+ * behaviour (newest 50, no date filter); the analytics views ask for a wider
+ * window so their charts can be drawn from real records.
+ */
+export interface HistoryQuery {
+  /** Max entries to return. Server caps this at 2000. */
+  limit?: number;
+  /** Only include entries from the last N days. */
+  days?: number;
+}
+
+function historyQueryString({ limit, days }: HistoryQuery): string {
+  const params = new URLSearchParams();
+  if (limit !== undefined) params.set('limit', String(limit));
+  if (days !== undefined) params.set('days', String(days));
+  const query = params.toString();
+  return query ? `?${query}` : '';
 }
 
 export const inventoryApi = {
   getItems: async (): Promise<InventoryItem[]> => {
-    const response = await fetch(`${API_URL}/inventory/items`, {
-      headers: getAuthHeaders(),
+    const data = await apiRequest<{ items: InventoryItem[] }>('/inventory/items', {
+      fallbackError: 'Failed to fetch items',
     });
-    if (!response.ok) throw new Error('Failed to fetch items');
-    const data = await response.json();
     return data.items;
   },
 
-  createItem: async (item: Omit<InventoryItem, 'id' | 'user_id' | 'created_at' | 'updated_at'>): Promise<InventoryItem> => {
-    const response = await fetch(`${API_URL}/inventory/items`, {
+  createItem: async (item: NewInventoryItem): Promise<InventoryItem> => {
+    const data = await apiRequest<{ item: InventoryItem }>('/inventory/items', {
       method: 'POST',
-      headers: getAuthHeaders(),
-      body: JSON.stringify(item),
+      body: item,
+      fallbackError: 'Failed to create item',
     });
-    if (!response.ok) throw new Error('Failed to create item');
-    const data = await response.json();
     return data.item;
   },
 
+  /**
+   * Creates many items in one request. The CSV/JSON import used to issue one
+   * POST per row, so a 500-row file meant 500 sequential round trips.
+   */
+  bulkCreateItems: async (items: NewInventoryItem[]): Promise<BulkImportResult> =>
+    apiRequest<BulkImportResult>('/inventory/items/bulk', {
+      method: 'POST',
+      body: { items },
+      fallbackError: 'Failed to import items',
+    }),
+
   updateItem: async (id: string, item: Partial<InventoryItem>): Promise<InventoryItem> => {
-    const response = await fetch(`${API_URL}/inventory/items/${id}`, {
+    const data = await apiRequest<{ item: InventoryItem }>(`/inventory/items/${id}`, {
       method: 'PUT',
-      headers: getAuthHeaders(),
-      body: JSON.stringify(item),
+      body: item,
+      fallbackError: 'Failed to update item',
     });
-    if (!response.ok) throw new Error('Failed to update item');
-    const data = await response.json();
     return data.item;
   },
 
   deleteItem: async (id: string): Promise<void> => {
-    const response = await fetch(`${API_URL}/inventory/items/${id}`, {
+    await apiRequest<void>(`/inventory/items/${id}`, {
       method: 'DELETE',
-      headers: getAuthHeaders(),
+      fallbackError: 'Failed to delete item',
     });
-    if (!response.ok) throw new Error('Failed to delete item');
   },
 
-  reorderItem: async (id: string, quantity?: number): Promise<{ item: InventoryItem; history: ReorderHistoryEntry }> => {
-    const response = await fetch(`${API_URL}/inventory/items/${id}/reorder`, {
-      method: 'PATCH',
-      headers: getAuthHeaders(),
-      body: JSON.stringify(quantity !== undefined ? { quantity } : {}),
-    });
-    if (!response.ok) throw new Error(await parseErrorMessage(response, 'Failed to reorder item'));
-    const data = await response.json();
+  reorderItem: async (
+    id: string,
+    quantity?: number
+  ): Promise<{ item: InventoryItem; history: ReorderHistoryEntry }> => {
+    const data = await apiRequest<{ item: InventoryItem; history: ReorderHistoryEntry }>(
+      `/inventory/items/${id}/reorder`,
+      {
+        method: 'PATCH',
+        body: quantity !== undefined ? { quantity } : {},
+        fallbackError: 'Failed to reorder item',
+      }
+    );
     return { item: data.item, history: data.history };
   },
 
-  consumeItem: async (id: string, quantity: number): Promise<{ item: InventoryItem; history: ConsumptionHistoryEntry }> => {
-    const response = await fetch(`${API_URL}/inventory/items/${id}/consume`, {
-      method: 'PATCH',
-      headers: getAuthHeaders(),
-      body: JSON.stringify({ quantity }),
-    });
-    if (!response.ok) throw new Error(await parseErrorMessage(response, 'Failed to consume item'));
-    const data = await response.json();
+  consumeItem: async (
+    id: string,
+    quantity: number
+  ): Promise<{ item: InventoryItem; history: ConsumptionHistoryEntry }> => {
+    const data = await apiRequest<{ item: InventoryItem; history: ConsumptionHistoryEntry }>(
+      `/inventory/items/${id}/consume`,
+      {
+        method: 'PATCH',
+        body: { quantity },
+        fallbackError: 'Failed to consume item',
+      }
+    );
     return { item: data.item, history: data.history };
   },
 
-  getReorderHistory: async (): Promise<ReorderHistoryEntry[]> => {
-    const response = await fetch(`${API_URL}/inventory/reorder-history`, {
-      headers: getAuthHeaders(),
-    });
-    if (!response.ok) throw new Error(await parseErrorMessage(response, 'Failed to fetch reorder history'));
-    const data = await response.json();
+  getReorderHistory: async (options: HistoryQuery = {}): Promise<ReorderHistoryEntry[]> => {
+    const data = await apiRequest<{ history: ReorderHistoryEntry[] }>(
+      `/inventory/reorder-history${historyQueryString(options)}`,
+      { fallbackError: 'Failed to fetch reorder history' }
+    );
     return data.history;
   },
 
-  getConsumptionHistory: async (): Promise<ConsumptionHistoryEntry[]> => {
-    const response = await fetch(`${API_URL}/inventory/consumption-history`, {
-      headers: getAuthHeaders(),
-    });
-    if (!response.ok) throw new Error(await parseErrorMessage(response, 'Failed to fetch consumption history'));
-    const data = await response.json();
+  getConsumptionHistory: async (options: HistoryQuery = {}): Promise<ConsumptionHistoryEntry[]> => {
+    const data = await apiRequest<{ history: ConsumptionHistoryEntry[] }>(
+      `/inventory/consumption-history${historyQueryString(options)}`,
+      { fallbackError: 'Failed to fetch consumption history' }
+    );
     return data.history;
   },
 
@@ -186,40 +220,42 @@ export const inventoryApi = {
     query.set('page', String(params.page ?? 1));
     query.set('limit', String(params.limit ?? 10));
 
-    const response = await fetch(`${API_URL}/inventory/items?${query.toString()}`, {
-      headers: getAuthHeaders(),
+    return apiRequest<ItemSearchResult>(`/inventory/items?${query.toString()}`, {
+      fallbackError: 'Failed to search items',
     });
-    if (!response.ok) throw new Error(await parseErrorMessage(response, 'Failed to search items'));
-    return response.json();
   },
 
-  getStats: async (): Promise<Stats> => {
-    const response = await fetch(`${API_URL}/inventory/stats`, {
-      headers: getAuthHeaders(),
-    });
-    if (!response.ok) throw new Error('Failed to fetch stats');
-    return response.json();
-  },
+  getStats: async (): Promise<Stats> =>
+    apiRequest<Stats>('/inventory/stats', { fallbackError: 'Failed to fetch stats' }),
 
-  getPredictions: async (): Promise<PredictionsResponse> => {
-    const response = await fetch(`${API_URL}/inventory/predictions`, {
-      headers: getAuthHeaders(),
-    });
-    if (!response.ok) throw new Error('Failed to fetch predictions');
-    return response.json();
-  },
+  getPredictions: async (): Promise<PredictionsResponse> =>
+    apiRequest<PredictionsResponse>('/inventory/predictions', {
+      fallbackError: 'Failed to fetch predictions',
+    }),
 };
+
+/**
+ * Where a demand forecast came from, most-specific first:
+ *  - `household_history`    fitted on this household's own logged consumes
+ *  - `pretrained_model`     the generic training-data model for that item name
+ *  - `daily_usage_estimate` flat projection of the user's stated usage rate
+ */
+export type ForecastSource = 'household_history' | 'pretrained_model' | 'daily_usage_estimate';
 
 export interface ItemPrediction {
   demand_forecast: number[];
   refill_date: string;
   expiry_risk: 'High' | 'Medium' | 'Low';
   low_stock_probability: number;
+  forecast_source?: ForecastSource;
 }
 
 export interface ModelMetadata {
+  /** Data-completeness score, not model accuracy — see ml_service/main.py. */
   model_confidence: number;
   next_peak_demand_date: string;
+  /** How many items were forecast from each source. */
+  forecast_sources?: Record<ForecastSource, number>;
 }
 
 export interface PredictionsResponse {
@@ -240,22 +276,20 @@ export interface TeamMember {
 
 export const teamApi = {
   getTeamMembers: async (): Promise<TeamMember[]> => {
-    const response = await fetch(`${API_URL}/team`, {
-      headers: getAuthHeaders(),
+    const data = await apiRequest<{ members: TeamMember[] }>('/team', {
+      fallbackError: 'Failed to fetch team members',
     });
-    if (!response.ok) throw new Error('Failed to fetch team members');
-    const data = await response.json();
     return data.members;
   },
 
-  addTeamMember: async (member: Omit<TeamMember, 'id' | 'householdId'> & { password?: string }): Promise<TeamMember> => {
-    const response = await fetch(`${API_URL}/team`, {
+  addTeamMember: async (
+    member: Omit<TeamMember, 'id' | 'householdId'> & { password?: string }
+  ): Promise<TeamMember> => {
+    const data = await apiRequest<{ member: TeamMember }>('/team', {
       method: 'POST',
-      headers: getAuthHeaders(),
-      body: JSON.stringify(member),
+      body: member,
+      fallbackError: 'Failed to add team member',
     });
-    if (!response.ok) throw new Error('Failed to add team member');
-    const data = await response.json();
     return data.member;
   },
 
@@ -267,40 +301,19 @@ export const teamApi = {
     id: string,
     member: Partial<Omit<TeamMember, 'id' | 'householdId'>> & { password?: string }
   ): Promise<TeamMember> => {
-    const response = await fetch(`${API_URL}/team/${id}`, {
+    const data = await apiRequest<{ member: TeamMember }>(`/team/${id}`, {
       method: 'PUT',
-      headers: getAuthHeaders(),
-      body: JSON.stringify(member),
+      body: member,
+      fallbackError: 'Failed to update team member',
     });
-    if (!response.ok) {
-      let message = 'Failed to update team member';
-      try {
-        const data = await response.json();
-        message = data.error || message;
-      } catch {
-        // ignore parse errors, use default message
-      }
-      throw new Error(message);
-    }
-    const data = await response.json();
     return data.member;
   },
 
   deleteTeamMember: async (id: string): Promise<void> => {
-    const response = await fetch(`${API_URL}/team/${id}`, {
+    await apiRequest<void>(`/team/${id}`, {
       method: 'DELETE',
-      headers: getAuthHeaders(),
+      fallbackError: 'Failed to delete team member',
     });
-    if (!response.ok) {
-      let message = 'Failed to delete team member';
-      try {
-        const data = await response.json();
-        message = data.error || message;
-      } catch {
-        // ignore parse errors, use default message
-      }
-      throw new Error(message);
-    }
   },
 };
 
@@ -324,41 +337,82 @@ export interface ActionPlan {
 
 export const actionPlanApi = {
   getActionPlans: async (): Promise<ActionPlan[]> => {
-    const response = await fetch(`${API_URL}/action-plans`, {
-      headers: getAuthHeaders(),
+    const data = await apiRequest<{ plans: ActionPlan[] }>('/action-plans', {
+      fallbackError: 'Failed to fetch action plans',
     });
-    if (!response.ok) throw new Error(await parseErrorMessage(response, 'Failed to fetch action plans'));
-    const data = await response.json();
     return data.plans;
   },
 
   createActionPlan: async (title?: string): Promise<ActionPlan> => {
-    const response = await fetch(`${API_URL}/action-plans`, {
+    const data = await apiRequest<{ plan: ActionPlan }>('/action-plans', {
       method: 'POST',
-      headers: getAuthHeaders(),
-      body: JSON.stringify(title ? { title } : {}),
+      body: title ? { title } : {},
+      fallbackError: 'Failed to create action plan',
     });
-    if (!response.ok) throw new Error(await parseErrorMessage(response, 'Failed to create action plan'));
-    const data = await response.json();
     return data.plan;
   },
 
   updateTaskStatus: async (planId: string, taskId: string, done: boolean): Promise<ActionPlan> => {
-    const response = await fetch(`${API_URL}/action-plans/${planId}/tasks/${taskId}`, {
-      method: 'PATCH',
-      headers: getAuthHeaders(),
-      body: JSON.stringify({ done }),
-    });
-    if (!response.ok) throw new Error(await parseErrorMessage(response, 'Failed to update task'));
-    const data = await response.json();
+    const data = await apiRequest<{ plan: ActionPlan }>(
+      `/action-plans/${planId}/tasks/${taskId}`,
+      { method: 'PATCH', body: { done }, fallbackError: 'Failed to update task' }
+    );
     return data.plan;
   },
 
   deleteActionPlan: async (planId: string): Promise<void> => {
-    const response = await fetch(`${API_URL}/action-plans/${planId}`, {
+    await apiRequest<void>(`/action-plans/${planId}`, {
       method: 'DELETE',
-      headers: getAuthHeaders(),
+      fallbackError: 'Failed to delete action plan',
     });
-    if (!response.ok) throw new Error(await parseErrorMessage(response, 'Failed to delete action plan'));
+  },
+};
+
+export interface AuthUser {
+  id: string;
+  email: string;
+  name: string;
+  role: string;
+  householdId: string;
+  emailNotifications: boolean;
+}
+
+export const authApi = {
+  login: async (email: string, password: string): Promise<{ token: string; user: AuthUser }> =>
+    apiRequest<{ token: string; user: AuthUser }>('/auth/login', {
+      method: 'POST',
+      body: { email, password },
+      fallbackError: 'Login failed',
+      // A 401 here means "wrong password", not "your session died".
+      skipAuthRedirect: true,
+    }),
+
+  register: async (
+    email: string,
+    password: string,
+    name: string
+  ): Promise<{ token: string; user: AuthUser }> =>
+    apiRequest<{ token: string; user: AuthUser }>('/auth/register', {
+      method: 'POST',
+      body: { email, password, name },
+      fallbackError: 'Registration failed',
+      skipAuthRedirect: true,
+    }),
+
+  /** Re-reads the signed-in account, so a stale cached role can't linger. */
+  getMe: async (): Promise<AuthUser> => {
+    const data = await apiRequest<{ user: AuthUser }>('/auth/me', {
+      fallbackError: 'Failed to load your profile',
+    });
+    return data.user;
+  },
+
+  updateMe: async (updates: { name?: string; emailNotifications?: boolean }): Promise<AuthUser> => {
+    const data = await apiRequest<{ user: AuthUser }>('/auth/me', {
+      method: 'PATCH',
+      body: updates,
+      fallbackError: 'Failed to update profile',
+    });
+    return data.user;
   },
 };

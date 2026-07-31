@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { InventoryItem } from '../services/api';
 import { X } from 'lucide-react';
+import { useModalDismiss } from '../hooks/useModalDismiss';
 
 const CATEGORIES = [
   'Food',
@@ -24,6 +25,9 @@ interface ItemModalProps {
 }
 
 export const ItemModal = ({ item, onSave, onClose }: ItemModalProps) => {
+  // Escape closes the dialog and the page behind it stops scrolling.
+  useModalDismiss(onClose);
+
   const [formData, setFormData] = useState({
     name: '',
     category: '',
@@ -175,10 +179,15 @@ export const ItemModal = ({ item, onSave, onClose }: ItemModalProps) => {
   };
 
   return (
-    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+    <div
+            className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="item-modal-title"
+        >
       <div className="bg-white rounded-xl shadow-xl w-full max-w-md">
         <div className="flex justify-between items-center p-6 border-b border-gray-200">
-          <h2 className="text-xl font-semibold text-gray-800">
+          <h2 id="item-modal-title" className="text-xl font-semibold text-gray-800">
             {item ? 'Edit Item' : 'Add New Item'}
           </h2>
           <button
@@ -197,10 +206,11 @@ export const ItemModal = ({ item, onSave, onClose }: ItemModalProps) => {
           )}
 
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">
+            <label className="block text-sm font-medium text-gray-700 mb-2" htmlFor="item-item-name">
               Item Name *
             </label>
             <input
+              id="item-item-name"
               type="text"
               value={formData.name}
               onChange={(e) => setFormData({ ...formData, name: e.target.value })}
@@ -212,10 +222,11 @@ export const ItemModal = ({ item, onSave, onClose }: ItemModalProps) => {
 
           <div className="grid grid-cols-2 gap-4">
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">
-                Category *
-              </label>
+              <label className="block text-sm font-medium text-gray-700 mb-2" htmlFor="item-category">
+              Category *
+            </label>
               <select
+              id="item-category"
                 value={formData.category}
                 onChange={(e) => setFormData({ ...formData, category: e.target.value })}
                 className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent outline-none bg-white"
@@ -231,10 +242,11 @@ export const ItemModal = ({ item, onSave, onClose }: ItemModalProps) => {
             </div>
 
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">
-                Unit *
-              </label>
+              <label className="block text-sm font-medium text-gray-700 mb-2" htmlFor="item-unit">
+              Unit *
+            </label>
               <select
+              id="item-unit"
                 value={formData.unit}
                 onChange={(e) => setFormData({ ...formData, unit: e.target.value })}
                 className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent outline-none bg-white"
@@ -255,10 +267,11 @@ export const ItemModal = ({ item, onSave, onClose }: ItemModalProps) => {
 
           <div className="grid grid-cols-2 gap-4">
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">
-                Quantity *
-              </label>
+              <label className="block text-sm font-medium text-gray-700 mb-2" htmlFor="item-quantity">
+              Quantity *
+            </label>
               <input
+              id="item-quantity"
                 type="number"
                 value={formData.quantity}
                 onChange={(e) => setFormData({ ...formData, quantity: e.target.value })}
@@ -270,10 +283,11 @@ export const ItemModal = ({ item, onSave, onClose }: ItemModalProps) => {
             </div>
 
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">
+              <label htmlFor="item-daily-usage" className="block text-sm font-medium text-gray-700 mb-2">
                 Daily Usage ({formData.unit}/day) *
               </label>
               <input
+                id="item-daily-usage"
                 type="number"
                 step="0.1"
                 value={formData.daily_usage}
@@ -288,10 +302,11 @@ export const ItemModal = ({ item, onSave, onClose }: ItemModalProps) => {
 
           <div className="grid grid-cols-2 gap-4">
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">
-                Minimum Stock
-              </label>
+              <label className="block text-sm font-medium text-gray-700 mb-2" htmlFor="item-minimum-stock">
+              Minimum Stock
+            </label>
               <input
+              id="item-minimum-stock"
                 type="number"
                 value={formData.min_stock_level}
                 onChange={(e) => setFormData({ ...formData, min_stock_level: e.target.value })}
@@ -302,10 +317,11 @@ export const ItemModal = ({ item, onSave, onClose }: ItemModalProps) => {
             </div>
 
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">
+              <label htmlFor="item-cost-per-unit" className="block text-sm font-medium text-gray-700 mb-2">
                 Cost per {formData.unit} (₹)
               </label>
               <input
+                id="item-cost-per-unit"
                 type="number"
                 step="0.01"
                 value={formData.cost_per_unit}
@@ -318,10 +334,11 @@ export const ItemModal = ({ item, onSave, onClose }: ItemModalProps) => {
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">
+            <label className="block text-sm font-medium text-gray-700 mb-2" htmlFor="item-storage-location">
               Storage Location
             </label>
             <input
+              id="item-storage-location"
               type="text"
               value={formData.storage_location}
               onChange={(e) => setFormData({ ...formData, storage_location: e.target.value })}
@@ -332,10 +349,11 @@ export const ItemModal = ({ item, onSave, onClose }: ItemModalProps) => {
 
           <div className="grid grid-cols-2 gap-4">
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">
-                Purchase Date
-              </label>
+              <label className="block text-sm font-medium text-gray-700 mb-2" htmlFor="item-purchase-date">
+              Purchase Date
+            </label>
               <input
+              id="item-purchase-date"
                 type="date"
                 value={formData.purchase_date}
                 onChange={(e) => setFormData({ ...formData, purchase_date: e.target.value })}
@@ -344,10 +362,11 @@ export const ItemModal = ({ item, onSave, onClose }: ItemModalProps) => {
             </div>
 
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">
+              <label htmlFor="item-expiry-date" className="block text-sm font-medium text-gray-700 mb-2">
                 Expiry Date {!['Cleaning', 'Personal Care'].includes(formData.category) && '*'}
               </label>
               <input
+                id="item-expiry-date"
                 type="date"
                 value={formData.expiry_date}
                 onChange={(e) => setFormData({ ...formData, expiry_date: e.target.value })}

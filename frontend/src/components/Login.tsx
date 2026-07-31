@@ -4,9 +4,15 @@ import { LogIn, Leaf, Eye, EyeOff } from 'lucide-react';
 
 interface LoginProps {
   onToggle: () => void;
+  /**
+   * Explanation shown when the user landed here because their session
+   * ended on its own — expired, revoked by a role change, or the account
+   * deactivated. Without it they'd be bounced to login with no reason given.
+   */
+  notice?: string | null;
 }
 
-export const Login = ({ onToggle }: LoginProps) => {
+export const Login = ({ onToggle, notice }: LoginProps) => {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
@@ -39,17 +45,33 @@ export const Login = ({ onToggle }: LoginProps) => {
         <h1 className="text-3xl font-bold text-center text-gray-800 mb-2">Welcome Back</h1>
         <p className="text-center text-gray-600 mb-8">Sign in to HappyShelf</p>
 
+        {notice && !error && (
+          <div
+            className="bg-amber-50 border border-amber-200 text-amber-800 px-4 py-3 rounded-lg mb-4"
+            role="status"
+          >
+            {notice}
+          </div>
+        )}
+
         {error && (
-          <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg mb-4">
+          <div
+            className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg mb-4"
+            role="alert"
+          >
             {error}
           </div>
         )}
 
         <form onSubmit={handleSubmit} className="space-y-6">
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">Email</label>
+            <label htmlFor="login-email" className="block text-sm font-medium text-gray-700 mb-2">
+              Email
+            </label>
             <input
+              id="login-email"
               type="email"
+              autoComplete="email"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent outline-none transition"
@@ -59,16 +81,19 @@ export const Login = ({ onToggle }: LoginProps) => {
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">Password</label>
+            <label htmlFor="login-password" className="block text-sm font-medium text-gray-700 mb-2">
+              Password
+            </label>
             <div className="relative">
               <input
+                id="login-password"
                 type={showPassword ? 'text' : 'password'}
+                autoComplete="current-password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 className="w-full pr-12 px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent outline-none transition"
                 placeholder="••••••••"
                 required
-                aria-label="Password"
               />
 
               <button

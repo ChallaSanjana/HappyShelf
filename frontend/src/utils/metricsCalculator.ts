@@ -1,9 +1,11 @@
 import { InventoryItem } from '../services/api';
-import { isExpired, isExpiredOrExpiringSoon } from './expiry';
+import { isExpiredOrExpiringSoon } from './expiry';
+import { getStockStatus, needsRestock, CARBON_PER_WELL_MANAGED_ITEM } from './stock';
 
 export interface CalculatedMetrics {
   totalItems: number;
   lowStockItems: number;
+  outOfStockItems: number;
   expiringSoon: number;
   categoryCounts: Record<string, number>;
   predictedSavings: number;
@@ -11,14 +13,31 @@ export interface CalculatedMetrics {
 }
 
 /**
- * Calculate all inventory metrics from items array
- * All calculations are done on the frontend based on item data
+ * Items that are neither expiring nor running out — the stock that current
+ * behaviour is successfully protecting from waste.
+ */
+export const getWellManagedItems = (items: InventoryItem[]): InventoryItem[] =>
+  items.filter(
+    (item) => !isExpiredOrExpiringSoon(item.expiry_date) && getStockStatus(item) === 'healthy'
+  );
+
+/**
+ * Dashboard metrics, computed locally so the UI updates the instant an item
+ * changes rather than waiting on a round trip.
+ *
+ * Must stay equivalent to calculateStats() in
+ * backend/src/utils/inventoryMetrics.js — the shared-fixture tests on both
+ * sides exist to catch it if it doesn't.
  */
 export const calculateMetrics = (items: InventoryItem[]): CalculatedMetrics => {
-  if (!items || items.length === 0) {
+  const list = items || [];
+  const totalItems = list.length;
+
+  if (totalItems === 0) {
     return {
       totalItems: 0,
       lowStockItems: 0,
+      outOfStockItems: 0,
       expiringSoon: 0,
       categoryCounts: {},
       predictedSavings: 0,
@@ -26,41 +45,30 @@ export const calculateMetrics = (items: InventoryItem[]): CalculatedMetrics => {
     };
   }
 
-  const totalItems = items.length;
+  const lowStockItems = list.filter(needsRestock).length;
+  const outOfStockItems = list.filter((item) => getStockStatus(item) === 'out').length;
+  const expiringSoon = list.filter((item) => isExpiredOrExpiringSoon(item.expiry_date)).length;
 
-  const lowStockItems = items.filter((item) => {
-    const daysLeft = item.daily_usage > 0 ? item.quantity / item.daily_usage : 999;
-    return daysLeft < 3;
-  }).length;
-
-  // Count items expiring soon (within 7 days) OR already expired.
-  // Previously this only matched days >= 0, so already-expired items were
-  // never flagged anywhere. isExpiredOrExpiringSoon fixes that.
-  const expiringSoon = items.filter((item) => isExpiredOrExpiringSoon(item.expiry_date, 7)).length;
-
-  const categoryCounts = items.reduce((acc, item) => {
+  const categoryCounts = list.reduce((acc, item) => {
     acc[item.category] = (acc[item.category] || 0) + 1;
     return acc;
   }, {} as Record<string, number>);
 
-  // Calculate well-managed items (not expired, not expiring soon, AND not low stock)
-  const wellManagedItemsList = items.filter((item) => {
-    if (isExpired(item.expiry_date)) return false;
-    const daysLeft = item.daily_usage > 0 ? item.quantity / item.daily_usage : 999;
-    return !isExpiredOrExpiringSoon(item.expiry_date, 7) && daysLeft >= 3;
-  });
+  const wellManaged = getWellManagedItems(list);
 
-  // Mirrors the backend's getStats: rupee value of stock currently safe from
-  // waste (quantity * cost_per_unit), summed only over well-managed items
-  // that actually have a cost entered. No fabricated per-category pricing.
+  // Value of stock currently safe from waste. Items with no cost_per_unit
+  // contribute 0 rather than a fabricated per-category price guess.
   const predictedSavings = Math.round(
-    wellManagedItemsList.reduce((sum, item) => sum + (item.quantity || 0) * (item.cost_per_unit || 0), 0)
+    wellManaged.reduce((sum, item) => sum + (item.quantity || 0) * (item.cost_per_unit || 0), 0)
   );
-  const carbonReduced = totalItems > 0 ? Math.round(wellManagedItemsList.length * 0.5 * 100) / 100 : 0;
+
+  const carbonReduced =
+    Math.round(wellManaged.length * CARBON_PER_WELL_MANAGED_ITEM * 100) / 100;
 
   return {
     totalItems,
     lowStockItems,
+    outOfStockItems,
     expiringSoon,
     categoryCounts,
     predictedSavings,

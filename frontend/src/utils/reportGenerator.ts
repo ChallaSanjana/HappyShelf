@@ -3,6 +3,10 @@ import autoTable from 'jspdf-autotable';
 import { InventoryItem, Stats, PredictionsResponse, ConsumptionHistoryEntry } from '../services/api';
 import { getDaysToExpiry, isExpired, isExpiredOrExpiringSoon, formatExpiryLabel } from './expiry';
 import { getSuggestedReorderQuantity } from './reorder';
+import { getDaysLeft, getStockStatus } from './stock';
+// CO2 factors and the "wasted" definition are shared with the sustainability
+// widgets so the report can't quietly disagree with what's on screen.
+import { getCO2Factor, isWasted } from './sustainability';
 
 /**
  * Builds and downloads the "HappyShelf Inventory Report" PDF from data
@@ -37,33 +41,11 @@ const MARGIN = 14;
 const CONTENT_TOP = 26;
 const CONTENT_BOTTOM = 20;
 
-const categoryCO2Factors: Record<string, number> = {
-  produce: 1.2,
-  dairy: 3.0,
-  meat: 10.0,
-  bakery: 1.5,
-  dry: 0.8,
-  beverage: 1.0,
-};
-
-const getCO2Factor = (category: string): number => {
-  const cat = category?.toLowerCase() || '';
-  for (const [key, val] of Object.entries(categoryCO2Factors)) {
-    if (cat.includes(key)) return val;
-  }
-  return 2.0;
-};
-
-// Same "wasted" definition used across the sustainability widgets: out of
-// stock, or already past its expiry date.
-const isWasted = (item: InventoryItem): boolean =>
-  (item.quantity ?? 0) <= 0 || isExpiredOrExpiringSoon(item.expiry_date, 0);
-
 const getItemStatus = (item: InventoryItem): 'Out of Stock' | 'Expiring Soon' | 'Low Stock' | 'Healthy' => {
-  if ((item.quantity ?? 0) <= 0) return 'Out of Stock';
+  const stock = getStockStatus(item);
+  if (stock === 'out') return 'Out of Stock';
   if (isExpiredOrExpiringSoon(item.expiry_date, 7)) return 'Expiring Soon';
-  const daysLeft = item.daily_usage > 0 ? item.quantity / item.daily_usage : Infinity;
-  if (daysLeft < 3) return 'Low Stock';
+  if (stock === 'low') return 'Low Stock';
   return 'Healthy';
 };
 
@@ -447,7 +429,7 @@ export const generateInventoryReportPdf = ({
 
   const purchaseRecs = items
     .map((it) => {
-      const score = (it.daily_usage || 0) > 0 ? (it.quantity || 0) / it.daily_usage : Infinity;
+      const score = getDaysLeft(it);
       const mlRefillDate = predictions?.predictions?.[it.id]?.refill_date;
       return { item: it, score, mlRefillDate };
     })

@@ -1,29 +1,64 @@
 import React from 'react';
-import { InventoryItem, Stats, PredictionsResponse } from '../../services/api';
+import { ConsumptionHistoryEntry } from '../../services/api';
 import { SimpleLineChart } from '../charts/SimpleChart';
+import { buildMonthBuckets, bucketRecords, hasAnyData } from '../../utils/history';
 
-type Props = { items: InventoryItem[]; stats: Stats | null; predictions?: PredictionsResponse | null };
+type Props = { consumptionHistory: ConsumptionHistoryEntry[] };
 
-const SeasonalTrends: React.FC<Props> = ({ items }) => {
-  if (!items || items.length === 0) {
+const MONTHS_SHOWN = 12;
+
+/** A year of history before month-to-month comparison means anything. */
+const MONTHS_FOR_SEASONALITY = 12;
+
+/**
+ * Month-by-month consumption over the past year.
+ *
+ * Previously this plotted `base * (1 + Math.cos(i) * 0.3 + (i % 3) * 0.05)`
+ * across all twelve months — a cosine wave that responded only to how many
+ * items existed, and would have looked identical for a household that had
+ * never consumed anything. Real seasonality needs real history, so when
+ * there isn't enough of it this now says so instead of drawing a curve.
+ */
+const SeasonalTrends: React.FC<Props> = ({ consumptionHistory }) => {
+  const buckets = bucketRecords(
+    buildMonthBuckets(MONTHS_SHOWN),
+    consumptionHistory || [],
+    (entry) => entry.quantityConsumed
+  );
+
+  const monthsWithData = buckets.filter((bucket) => bucket.value > 0).length;
+
+  if (!hasAnyData(buckets)) {
     return (
       <div>
         <h4 className="text-md font-medium mb-3">Seasonal Trends</h4>
-        <div className="flex items-center justify-center h-[140px] border border-dashed border-gray-200 rounded-lg text-sm text-gray-500">
-          No inventory items to forecast.
+        <div className="flex items-center justify-center h-[140px] border border-dashed border-gray-200 rounded-lg text-sm text-gray-500 text-center px-4">
+          No consumption history yet — seasonal patterns appear once you have
+          recorded usage across several months.
         </div>
       </div>
     );
   }
 
-  const labels = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-  const base = Math.max(1, Math.round(items.length / 6));
-  const data = labels.map((_, i) => Math.round(base * (1 + Math.cos(i) * 0.3 + (i % 3) * 0.05)));
-
   return (
     <div>
       <h4 className="text-md font-medium mb-3">Seasonal Trends</h4>
-      <SimpleLineChart labels={labels} datasets={[{ label: 'Seasonal Demand', data, borderColor: '#34d399' }]} height={140} />
+      <SimpleLineChart
+        labels={buckets.map((bucket) => bucket.label)}
+        datasets={[
+          {
+            label: 'Units Consumed',
+            data: buckets.map((bucket) => Math.round(bucket.value * 100) / 100),
+            borderColor: '#34d399',
+          },
+        ]}
+        height={140}
+      />
+      <p className="mt-2 text-xs text-gray-500">
+        {monthsWithData < MONTHS_FOR_SEASONALITY
+          ? `Based on ${monthsWithData} month${monthsWithData === 1 ? '' : 's'} of recorded usage — not yet a full year, so treat seasonal comparisons cautiously.`
+          : 'Actual units consumed per month over the past year.'}
+      </p>
     </div>
   );
 };
