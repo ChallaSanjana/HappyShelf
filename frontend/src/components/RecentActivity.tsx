@@ -1,6 +1,7 @@
 import React from 'react';
 import { InventoryItem, Stats } from '../services/api';
 import { getDaysToExpiry } from '../utils/expiry';
+import { getDaysLeft, needsRestock } from '../utils/stock';
 
 interface Activity {
   id: string | number;
@@ -19,20 +20,24 @@ export const RecentActivity: React.FC<Props> = ({ items, stats }) => {
   const activities: Activity[] = [];
 
   const low = items
-    .map((it) => ({
-      item: it,
-      daysLeft: it.daily_usage > 0 ? it.quantity / it.daily_usage : Infinity,
-    }))
-    .filter((x) => x.daysLeft < 3)
+    .filter(needsRestock)
+    .map((it) => ({ item: it, daysLeft: getDaysLeft(it) }))
     .slice(0, 5);
 
   low.forEach((l) => {
+    // daysLeft is Infinity for an item flagged low purely by min_stock_level
+    // (nothing is being consumed, so it never "runs out"), which would
+    // otherwise render as "Infinity days left".
+    const hasRunway = Number.isFinite(l.daysLeft);
+    const daysLabel = Math.max(1, Math.ceil(l.daysLeft));
     activities.push({
       id: `low-${l.item.id}`,
       title: `${l.item.name} reorder suggested`,
-      desc: `Stock will run out in ${Math.ceil(l.daysLeft)} days. Recommended order: ${Math.max(1, Math.ceil(l.item.quantity || 0))} units.`,
+      desc: hasRunway
+        ? `Stock will run out in ${Math.ceil(l.daysLeft)} days. Recommended order: ${Math.max(1, Math.ceil(l.item.quantity || 0))} units.`
+        : `Stock is at or below its minimum level. Recommended order: ${Math.max(1, Math.ceil(l.item.quantity || 0))} units.`,
       status: 'pending',
-      time: `${Math.max(1, Math.ceil(l.daysLeft))} days left`,
+      time: hasRunway ? `${daysLabel} days left` : 'Below minimum',
     });
   });
 

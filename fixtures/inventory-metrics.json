@@ -1,0 +1,185 @@
+{
+  "_comment": [
+    "Shared contract fixtures for the inventory metric rules.",
+    "",
+    "Read by BOTH backend/__tests__/metrics.test.js and",
+    "frontend/src/utils/__tests__/metrics.test.ts. The two implementations",
+    "(backend/src/utils/inventoryMetrics.js and frontend/src/utils/stock.ts +",
+    "metricsCalculator.ts) exist separately so the UI can recompute instantly",
+    "without a round trip — this file is what stops them drifting apart, which",
+    "is exactly what happened before they were consolidated.",
+    "",
+    "expiryOffsetDays is relative to the moment the test runs; null means the",
+    "item has no expiry date at all."
+  ],
+
+  "items": [
+    {
+      "id": "healthy-1",
+      "name": "Rice",
+      "category": "Grains",
+      "quantity": 100,
+      "daily_usage": 1,
+      "expiryOffsetDays": 90,
+      "unit": "kg",
+      "min_stock_level": 10,
+      "cost_per_unit": 60
+    },
+    {
+      "id": "healthy-no-expiry",
+      "name": "Salt",
+      "category": "Condiments",
+      "quantity": 50,
+      "daily_usage": 0.5,
+      "expiryOffsetDays": null,
+      "unit": "kg",
+      "min_stock_level": null,
+      "cost_per_unit": 20
+    },
+    {
+      "id": "low-by-days",
+      "name": "Milk",
+      "category": "Dairy",
+      "quantity": 2,
+      "daily_usage": 1,
+      "expiryOffsetDays": 30,
+      "unit": "L",
+      "min_stock_level": null,
+      "cost_per_unit": 50
+    },
+    {
+      "id": "low-by-min-stock",
+      "name": "Light bulbs",
+      "category": "Household",
+      "quantity": 3,
+      "daily_usage": 0,
+      "expiryOffsetDays": null,
+      "unit": "pcs",
+      "min_stock_level": 5,
+      "cost_per_unit": 100
+    },
+    {
+      "id": "out-of-stock",
+      "name": "Coffee",
+      "category": "Beverages",
+      "quantity": 0,
+      "daily_usage": 2,
+      "expiryOffsetDays": 60,
+      "unit": "g",
+      "min_stock_level": 1,
+      "cost_per_unit": 400
+    },
+    {
+      "id": "expiring-soon",
+      "name": "Yogurt",
+      "category": "Dairy",
+      "quantity": 40,
+      "daily_usage": 1,
+      "expiryOffsetDays": 3,
+      "unit": "pcs",
+      "min_stock_level": null,
+      "cost_per_unit": 25
+    },
+    {
+      "id": "already-expired",
+      "name": "Bread",
+      "category": "Bakery",
+      "quantity": 5,
+      "daily_usage": 0.5,
+      "expiryOffsetDays": -4,
+      "unit": "pcs",
+      "min_stock_level": null,
+      "cost_per_unit": 40
+    },
+    {
+      "id": "no-cost-recorded",
+      "name": "Spices",
+      "category": "Condiments",
+      "quantity": 30,
+      "daily_usage": 0.2,
+      "expiryOffsetDays": 200,
+      "unit": "g",
+      "min_stock_level": null,
+      "cost_per_unit": null
+    }
+  ],
+
+  "_expectations": [
+    "stockStatus, per item id — 'low-by-min-stock' is the case that used to",
+    "disagree between the dashboard and the alert emails.",
+    "",
+    "stats.lowStockItems counts 'low' AND 'out' (3: low-by-days,",
+    "low-by-min-stock, out-of-stock).",
+    "expiringSoon counts expiring-soon AND already-expired (2).",
+    "wellManaged is everything healthy on stock and not expiring:",
+    "healthy-1, healthy-no-expiry, no-cost-recorded (3).",
+    "predictedSavings = 100*60 + 50*20 + 30*0 = 7000.",
+    "carbonReduced = 3 * 0.5 = 1.5."
+  ],
+
+  "expectedStockStatus": {
+    "healthy-1": "healthy",
+    "healthy-no-expiry": "healthy",
+    "low-by-days": "low",
+    "low-by-min-stock": "low",
+    "out-of-stock": "out",
+    "expiring-soon": "healthy",
+    "already-expired": "healthy",
+    "no-cost-recorded": "healthy"
+  },
+
+  "_lowStockProbabilityNote": [
+    "estimateLowStockProbability considers days of runway ONLY, not",
+    "min_stock_level — so 'low-by-min-stock' reports the 0.05 baseline even",
+    "though its stock status is 'low'. With no consumption it genuinely isn't",
+    "on track to run out. Existing behaviour, pinned here deliberately.",
+    "",
+    "healthy-1:          100/1   = 100 days  -> 0.05",
+    "healthy-no-expiry:  50/0.5  = 100 days  -> 0.05",
+    "low-by-days:        2/1     = 2 days    -> 0.95",
+    "low-by-min-stock:   no usage = Infinity -> 0.05",
+    "out-of-stock:       0/2     = 0 days    -> 0.95",
+    "expiring-soon:      40/1    = 40 days   -> 0.05",
+    "already-expired:    5/0.5   = 10 days   -> 0.05 (10 is not < 10)",
+    "no-cost-recorded:   30/0.2  = 150 days  -> 0.05"
+  ],
+
+  "expectedLowStockProbability": {
+    "healthy-1": 0.05,
+    "healthy-no-expiry": 0.05,
+    "low-by-days": 0.95,
+    "low-by-min-stock": 0.05,
+    "out-of-stock": 0.95,
+    "expiring-soon": 0.05,
+    "already-expired": 0.05,
+    "no-cost-recorded": 0.05
+  },
+
+  "expectedExpiryStatus": {
+    "healthy-1": "healthy",
+    "healthy-no-expiry": "none",
+    "low-by-days": "healthy",
+    "low-by-min-stock": "none",
+    "out-of-stock": "healthy",
+    "expiring-soon": "expiring_soon",
+    "already-expired": "expired",
+    "no-cost-recorded": "healthy"
+  },
+
+  "expectedStats": {
+    "totalItems": 8,
+    "lowStockItems": 3,
+    "outOfStockItems": 1,
+    "expiringSoon": 2,
+    "categoryCounts": {
+      "Grains": 1,
+      "Condiments": 2,
+      "Dairy": 2,
+      "Household": 1,
+      "Beverages": 1,
+      "Bakery": 1
+    },
+    "predictedSavings": 7000,
+    "carbonReduced": 1.5
+  }
+}

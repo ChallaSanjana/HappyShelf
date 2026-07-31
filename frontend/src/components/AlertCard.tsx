@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { InventoryItem } from '../services/api';
 import { AlertTriangle, Calendar } from 'lucide-react';
 import { formatExpiryLabel } from '../utils/expiry';
+import { getDaysLeft } from '../utils/stock';
 
 interface AlertCardProps {
   title: string;
@@ -14,8 +15,10 @@ export const AlertCard = ({ title, items, type }: AlertCardProps) => {
   const getItemDescription = (item: InventoryItem) => {
     if (type === 'stock') {
       if ((item.quantity ?? 0) <= 0) return 'Out of stock';
-      const daysLeft = item.daily_usage > 0 ? (item.quantity / item.daily_usage).toFixed(1) : 'N/A';
-      return `${daysLeft} days remaining`;
+      // getDaysLeft returns Infinity for an item that is never consumed, which
+      // has no meaningful "days remaining" to show.
+      const daysLeft = getDaysLeft(item);
+      return Number.isFinite(daysLeft) ? `${daysLeft.toFixed(1)} days remaining` : 'N/A days remaining';
     }
     // formatExpiryLabel correctly handles items that are already past their
     // expiry date ("Expired 3 days ago") instead of showing a nonsensical

@@ -2,34 +2,24 @@ import mongoose from 'mongoose';
 import Item from '../models/Item.js';
 import ActionPlan from '../models/ActionPlan.js';
 import { getUserItems } from './inventoryController.js';
+import {
+    getStockStatus,
+    getDaysToExpiry,
+    isExpiredOrExpiringSoon,
+} from '../utils/inventoryMetrics.js';
 
 function isDbConnected() {
     return mongoose.connection.readyState === 1;
 }
 
-// A user who registered/logged in while the DB was down gets a token with a
-// synthetic id like "dev_1"/"dev_user_...", which is not a valid Mongo
-// ObjectId or household_id. If the DB comes back up during that token's
-// lifetime, any query built from req.user.householdId would throw a
-// Mongoose CastError (surfacing as an opaque 500). Mirrors the same guard
-// in inventoryController.js.
-function isDevModeId(id) {
-    return typeof id === 'string' && id.startsWith('dev_');
-}
-
-function rejectStaleDevSession(req, res) {
-    if (isDbConnected() && (isDevModeId(req.user.householdId) || isDevModeId(req.user.userId))) {
-        res.status(409).json({
-            error: 'Your session was created while offline. Please log in again.',
-        });
-        return true;
-    }
-    return false;
-}
+// Sessions opened while the DB was down carry a synthetic "dev_" id that
+// can't be resolved once the DB is back. That's now rejected centrally in
+// middleware/auth.js, which re-reads the account on every request, so no
+// controller needs its own guard.
 
 // In-memory storage fallback for development when MongoDB is unavailable.
 // Keyed by householdId -> plans[], mirroring the pattern used elsewhere
-// (devUsers in authController.js, devInventory in inventoryController.js).
+// (devUsers in store/devStore.js, devInventory in inventoryController.js).
 const devActionPlans = new Map();
 let nextPlanId = 1;
 
@@ -40,39 +30,49 @@ function getHouseholdPlans(householdId) {
     return devActionPlans.get(householdId);
 }
 
-// Same thresholds as inventoryController's getStats/getPredictions, so the
-// checklist a plan generates always matches what the dashboard is showing
-// as "low stock" / "expiring soon" at the moment the plan is created.
-function isLowStock(item) {
-    const daysLeft = item.daily_usage > 0 ? item.quantity / item.daily_usage : 999;
-    return daysLeft < 3;
-}
-
-function daysToExpiry(item) {
-    if (!item.expiry_date) return null;
-    return Math.ceil((new Date(item.expiry_date) - new Date()) / (1000 * 60 * 60 * 24));
-}
-
-function isExpiringSoon(item) {
-    const days = daysToExpiry(item);
-    return days !== null && days >= 0 && days < 7;
+/**
+ * Serializes a task the way ActionPlan's toJSON transform does.
+ *
+ * buildTasksFromItems produces the snake_case shape Mongoose stores
+ * (`item_name`), and the model's toJSON renames it to `itemName` on the way
+ * out. The dev-mode path used to spread the raw task straight into the
+ * response, so without a database every task arrived as `item_name` and the
+ * UI — which reads `itemName` — rendered a blank name on every row.
+ */
+function buildDevTask(id, task) {
+    return {
+        id,
+        type: task.type,
+        itemName: task.item_name,
+        description: task.description,
+        done: task.done,
+    };
 }
 
 // Builds the checklist tasks from a household's current inventory. Runs
 // server-side against the live item list (not whatever the client sends)
 // so a plan can't be seeded with fabricated tasks.
+//
+// Stock and expiry status come from utils/inventoryMetrics.js — the same
+// module the dashboard stats, the search filters and the alert emails use.
+// This file previously kept private copies of both rules, and they had
+// drifted: the local isLowStock ignored min_stock_level, and the local
+// isExpiringSoon guarded on `days >= 0`, so an item that had *already
+// expired* produced no "use soon" task at all — the one case an action plan
+// most needs to raise.
 function buildTasksFromItems(items) {
     const tasks = [];
 
     for (const item of items) {
-        if (item.quantity <= 0) {
+        const status = getStockStatus(item);
+        if (status === 'out') {
             tasks.push({
                 type: 'restock',
                 item_name: item.name,
                 description: `${item.name} is out of stock — reorder as soon as possible.`,
                 done: false,
             });
-        } else if (isLowStock(item)) {
+        } else if (status === 'low') {
             tasks.push({
                 type: 'restock',
                 item_name: item.name,
@@ -83,9 +83,19 @@ function buildTasksFromItems(items) {
     }
 
     for (const item of items) {
-        if (isExpiringSoon(item)) {
-            const days = daysToExpiry(item);
-            const when = days <= 0 ? 'today' : `in ${days} day${days === 1 ? '' : 's'}`;
+        if (!isExpiredOrExpiringSoon(item.expiry_date)) continue;
+
+        const days = getDaysToExpiry(item.expiry_date);
+        if (days < 0) {
+            const ago = Math.abs(days);
+            tasks.push({
+                type: 'use_soon',
+                item_name: item.name,
+                description: `${item.name} expired ${ago} day${ago === 1 ? '' : 's'} ago — check it and discard if it has gone off.`,
+                done: false,
+            });
+        } else {
+            const when = days === 0 ? 'today' : `in ${days} day${days === 1 ? '' : 's'}`;
             tasks.push({
                 type: 'use_soon',
                 item_name: item.name,
@@ -100,8 +110,6 @@ function buildTasksFromItems(items) {
 
 export const getActionPlans = async (req, res) => {
     try {
-        if (rejectStaleDevSession(req, res)) return;
-
         const householdId = req.user.householdId;
 
         if (!isDbConnected()) {
@@ -121,8 +129,6 @@ export const getActionPlans = async (req, res) => {
 
 export const createActionPlan = async (req, res) => {
     try {
-        if (rejectStaleDevSession(req, res)) return;
-
         const { title } = req.body;
         const householdId = req.user.householdId;
         const planTitle = (typeof title === 'string' && title.trim()) || `Action Plan — ${new Date().toLocaleDateString()}`;
@@ -137,10 +143,10 @@ export const createActionPlan = async (req, res) => {
 
             const plan = {
                 id: `dev_plan_${nextPlanId++}`,
-                household_id: householdId,
-                created_by: req.user.userId,
+                householdId,
+                createdBy: req.user.userId,
                 title: planTitle,
-                tasks: tasks.map((t, i) => ({ id: `dev_task_${Date.now()}_${i}`, ...t })),
+                tasks: tasks.map((t, i) => buildDevTask(`dev_task_${Date.now()}_${i}`, t)),
                 created_at: new Date().toISOString(),
                 updated_at: new Date().toISOString(),
             };
@@ -180,8 +186,6 @@ export const createActionPlan = async (req, res) => {
 // supports — it's a checklist, not a general task editor.
 export const updateActionPlanTask = async (req, res) => {
     try {
-        if (rejectStaleDevSession(req, res)) return;
-
         const { planId, taskId } = req.params;
         const { done } = req.body;
         const householdId = req.user.householdId;
@@ -228,8 +232,6 @@ export const updateActionPlanTask = async (req, res) => {
 
 export const deleteActionPlan = async (req, res) => {
     try {
-        if (rejectStaleDevSession(req, res)) return;
-
         const { planId } = req.params;
         const householdId = req.user.householdId;
 

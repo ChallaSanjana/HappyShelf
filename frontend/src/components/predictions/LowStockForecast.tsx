@@ -1,6 +1,7 @@
 import React from 'react';
 import { InventoryItem, Stats, PredictionsResponse } from '../../services/api';
 import { SimpleBarChart } from '../charts/SimpleChart';
+import { estimateLowStockProbability } from '../../utils/stock';
 
 type Props = { items: InventoryItem[]; stats: Stats | null; predictions: PredictionsResponse | null };
 
@@ -25,11 +26,9 @@ const LowStockForecast: React.FC<Props> = ({ items, predictions }) => {
         return Math.round(itemPred.low_stock_probability * 100);
       }
     }
-    const daysLeft = s.daily_usage > 0 ? (s.quantity || 0) / s.daily_usage : 999;
-    if (daysLeft < 3) return 95;
-    if (daysLeft < 7) return 75;
-    if (daysLeft < 10) return 45;
-    return 5;
+    // No prediction for this item — fall back to the shared estimate rather
+    // than a private copy of the same days-of-runway ladder.
+    return Math.round(estimateLowStockProbability(s) * 100);
   });
 
   const renderModelBadge = (isMl?: boolean) => {
