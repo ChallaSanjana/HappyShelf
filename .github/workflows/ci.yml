@@ -67,9 +67,14 @@ jobs:
           code=$?
           if [ "$code" -ne 0 ]; then
             echo "::error::npm ci exited with $code"
-            tail -40 /tmp/npm-ci.log | while IFS= read -r line; do
-              printf '::error::%s\n' "$line"
-            done
+            echo "::error::npm=$(npm --version) node=$(node --version)"
+            # On EUSAGE npm dumps its whole options list, so the tail is
+            # useless -- the actual reason is near the top, plus any
+            # Missing:/Invalid: lines naming the offending packages.
+            grep -E "npm (error|warn) (code|Missing:|Invalid:)" /tmp/npm-ci.log | head -20 \
+              | while IFS= read -r line; do printf '::error::%s\n' "$line"; done
+            head -12 /tmp/npm-ci.log \
+              | while IFS= read -r line; do printf '::error::HEAD %s\n' "$line"; done
             exit "$code"
           fi
           cat /tmp/npm-ci.log
