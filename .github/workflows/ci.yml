@@ -57,7 +57,22 @@ jobs:
 
       - name: Install
         working-directory: frontend
-        run: npm ci
+        run: |
+          # npm's own output is only in the run log, which needs an
+          # authenticated token to read. Echoing the tail as ::error::
+          # workflow commands surfaces it as check annotations instead,
+          # which are readable on a public repo without credentials.
+          set +e
+          npm ci > /tmp/npm-ci.log 2>&1
+          code=$?
+          if [ "$code" -ne 0 ]; then
+            echo "::error::npm ci exited with $code"
+            tail -40 /tmp/npm-ci.log | while IFS= read -r line; do
+              printf '::error::%s\n' "$line"
+            done
+            exit "$code"
+          fi
+          cat /tmp/npm-ci.log
 
       - name: Typecheck
         working-directory: frontend
