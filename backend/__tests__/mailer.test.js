@@ -1,7 +1,7 @@
-import { test, describe } from 'node:test';
+import { test, describe, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { buildEnvelope, buildPasswordResetMessage } from '../src/utils/mailer.js';
+import { buildEnvelope, buildPasswordResetMessage, sendViaResend } from '../src/utils/mailer.js';
 
 /**
  * Two bugs in the password-reset email, both pinned here.
@@ -39,6 +39,87 @@ describe('buildEnvelope', () => {
     assert.ok(
       !everyRecipient.some((r) => String(r).includes('app@example.com')),
       'the sending address must not receive a copy of a direct message'
+    );
+  });
+});
+
+describe('sendViaResend', () => {
+  // Render's free web services block outbound SMTP (25/465/587) as of
+  // September 2025, so this HTTPS path is the delivery mechanism there.
+  // fetch is stubbed rather than hitting the real API — same reasoning
+  // getTransporter() uses to refuse a live SMTP connection under
+  // NODE_ENV=test, just applied to this transport instead.
+  let originalFetch;
+  let calls;
+
+  beforeEach(() => {
+    originalFetch = global.fetch;
+    calls = [];
+  });
+
+  afterEach(() => {
+    global.fetch = originalFetch;
+    delete process.env.RESEND_API_KEY;
+  });
+
+  function stubFetch(response) {
+    global.fetch = async (url, init) => {
+      calls.push({ url, init });
+      return response;
+    };
+  }
+
+  test('posts to the Resend API with the bearer token and JSON envelope', async () => {
+    process.env.RESEND_API_KEY = 'test-resend-key';
+    stubFetch({ ok: true });
+
+    await sendViaResend({
+      from: 'HappyShelf <onboarding@resend.dev>',
+      to: ['user@example.com'],
+      subject: 'Reset your HappyShelf password',
+      text: 'body',
+      html: '<p>body</p>',
+    });
+
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].url, 'https://api.resend.com/emails');
+    assert.equal(calls[0].init.method, 'POST');
+    assert.equal(calls[0].init.headers.Authorization, 'Bearer test-resend-key');
+    assert.equal(calls[0].init.headers['Content-Type'], 'application/json');
+
+    const body = JSON.parse(calls[0].init.body);
+    assert.deepEqual(body.to, ['user@example.com']);
+    assert.equal(body.from, 'HappyShelf <onboarding@resend.dev>');
+    assert.equal(body.subject, 'Reset your HappyShelf password');
+  });
+
+  test('throws on a non-ok response, including the status and body', async () => {
+    // Caught by sendMail's caller exactly like a failed SMTP send — this
+    // only has to signal failure clearly, not handle it itself. A 403 here
+    // is what Resend returns for a recipient other than the account's own
+    // signup address when no domain is verified.
+    process.env.RESEND_API_KEY = 'test-resend-key';
+    stubFetch({
+      ok: false,
+      status: 403,
+      text: async () => JSON.stringify({ message: 'not verified' }),
+    });
+
+    await assert.rejects(
+      () => sendViaResend({ from: 'a@example.com', to: ['b@example.com'], subject: 'x' }),
+      /403/
+    );
+  });
+
+  test('does not swallow a network failure either', async () => {
+    process.env.RESEND_API_KEY = 'test-resend-key';
+    global.fetch = async () => {
+      throw new Error('getaddrinfo ENOTFOUND api.resend.com');
+    };
+
+    await assert.rejects(
+      () => sendViaResend({ from: 'a@example.com', to: ['b@example.com'], subject: 'x' }),
+      /ENOTFOUND/
     );
   });
 });

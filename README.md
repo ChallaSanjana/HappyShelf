@@ -657,7 +657,7 @@ Fill in the values it marks `sync: false`:
 | `CORS_ORIGIN` | the Vercel URL from step 3 |
 | `APP_URL` | the same Vercel URL |
 | `ML_SERVICE_URL` | `https://happyshelf-ml.onrender.com`, after the ML service's first deploy |
-| `SMTP_*`, `EMAIL_FROM` | optional — unset, mail is logged to the service's stdout instead of sent |
+| `RESEND_API_KEY`, `EMAIL_FROM` | optional — unset, mail is logged to the service's stdout instead of sent |
 
 `CORS_ORIGIN` and `APP_URL` are only known after step 3, so expect to come
 back and redeploy the API once.
@@ -667,6 +667,28 @@ idle after inactivity and take several seconds to wake, which is why
 `ML_SERVICE_TIMEOUT_MS` is raised to 15s here — a cold ML service would
 otherwise exceed the 5s default and the API would quietly serve its JS
 fallback instead of real predictions.
+
+#### Email delivery on Render
+
+Use `RESEND_API_KEY`, not `SMTP_*`. Render's free web services have blocked
+outbound traffic to SMTP ports (25/465/587) since September 2025 — an SMTP
+config here doesn't fail cleanly, it hangs for nodemailer's connection
+timeout and then fails with `ENETUNREACH`/`ETIMEDOUT`, without ever reaching
+authentication. [Sign up at resend.com](https://resend.com), grab an API key
+from the dashboard, and set:
+
+```
+RESEND_API_KEY=re_your_key_here
+EMAIL_FROM=HappyShelf <onboarding@resend.dev>
+```
+
+That works immediately with no domain setup, but only for one recipient:
+**without verifying your own domain in Resend, it can only deliver to the
+email address the Resend account was signed up with.** Fine for a
+single-admin deployment; a household with members on other addresses won't
+get their stock alerts or reset links until a domain is verified. `SMTP_*`
+still works as a transport for hosts that don't block those ports — Resend
+takes priority automatically when both are set.
 
 ### 3. Vercel — frontend
 

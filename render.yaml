@@ -84,16 +84,16 @@ services:
       - key: TRUST_PROXY
         value: "1"
 
-      # SMTP is optional: unset, the app logs mail to stdout instead of
-      # sending. Password reset then still works, but the link only appears
-      # in the service logs -- set these for real delivery.
-      - key: SMTP_HOST
-        sync: false
-      - key: SMTP_PORT
-        sync: false
-      - key: SMTP_USER
-        sync: false
-      - key: SMTP_PASS
+      # Email is optional: unset, the app logs mail (including the
+      # password-reset link) to stdout instead of sending.
+      #
+      # Use RESEND_API_KEY, not SMTP_*, on this host: Render's free web
+      # services block outbound SMTP ports (25/465/587) as of September
+      # 2025, which makes SMTP_HOST/PORT/USER/PASS hang and time out here
+      # rather than actually deliver. Resend sends over HTTPS instead, so
+      # it isn't affected. See the README's Deployment section for setup
+      # and the one-recipient limitation without a verified domain.
+      - key: RESEND_API_KEY
         sync: false
       - key: EMAIL_FROM
         sync: false

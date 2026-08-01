@@ -1,5 +1,9 @@
 import nodemailer from 'nodemailer';
 
+const RESEND_API_URL = 'https://api.resend.com/emails';
+const IN_TEST_CONTEXT =
+  process.env.NODE_ENV === 'test' || process.env.NODE_ENV === 'test-e2e';
+
 let transporter;
 let warnedMissingConfig = false;
 
@@ -20,7 +24,7 @@ function getTransporter() {
   // under NODE_ENV=test-e2e specifically so it's distinguishable from the
   // unit-test backend (different in-memory store lifecycle), but it is still
   // a test context and must be guarded here the same way.
-  if (process.env.NODE_ENV === 'test' || process.env.NODE_ENV === 'test-e2e') {
+  if (IN_TEST_CONTEXT) {
     transporter = null;
     return transporter;
   }
@@ -42,6 +46,39 @@ function getTransporter() {
     auth: { user: SMTP_USER, pass: SMTP_PASS },
   });
   return transporter;
+}
+
+/**
+ * Sends over Resend's HTTPS API rather than a raw SMTP socket.
+ *
+ * Render's free web services block outbound traffic to SMTP ports
+ * (25/465/587) as of September 2025 — connections to smtp.gmail.com hung
+ * for the nodemailer default timeout and then failed with ENETUNREACH /
+ * ETIMEDOUT, never even reaching authentication. An HTTPS POST isn't
+ * subject to that block, so this is the delivery path for that hosting
+ * environment; getTransporter()'s raw-SMTP path above still exists for
+ * hosts that don't block it.
+ *
+ * Without a verified sending domain on the Resend account, the API only
+ * accepts deliveries to the address the account was signed up with — a
+ * restriction Resend enforces to protect deliverability from the shared
+ * onboarding@resend.dev address. Any other recipient gets a 403 here,
+ * caught by sendMail's caller exactly like a failed SMTP send.
+ */
+export async function sendViaResend({ from, to, bcc, subject, text, html }) {
+  const response = await fetch(RESEND_API_URL, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${process.env.RESEND_API_KEY}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ from, to, bcc, subject, text, html }),
+  });
+
+  if (!response.ok) {
+    const body = await response.text().catch(() => '');
+    throw new Error(`Resend API responded ${response.status}: ${body.slice(0, 300)}`);
+  }
 }
 
 /**
@@ -80,12 +117,28 @@ export async function sendMail({ to, subject, text, html, direct = false }) {
   const recipients = Array.isArray(to) ? to.filter(Boolean) : [to].filter(Boolean);
   if (recipients.length === 0) return;
 
+  // Resend takes priority when configured: it is the delivery path that
+  // actually works on Render's free tier, so a deployment with both set
+  // (e.g. leftover SMTP_* from before the switch) should prefer it rather
+  // than the transport known to hang on that host.
+  if (!IN_TEST_CONTEXT && process.env.RESEND_API_KEY) {
+    const from = process.env.EMAIL_FROM || 'HappyShelf <onboarding@resend.dev>';
+    const envelope = buildEnvelope({ from, recipients, direct });
+    try {
+      await sendViaResend({ ...envelope, subject, text, html });
+    } catch (error) {
+      console.error('Failed to send email:', error.message);
+    }
+    return;
+  }
+
   const t = getTransporter();
   if (!t) {
     // Without this, an unconfigured deployment has no way to retrieve a
     // password-reset link at all: the subject/recipient alone don't contain
     // it, only the body does. This is the only place that link surfaces when
-    // SMTP is unset, so it has to be here, not just the fact a send happened.
+    // neither transport is set, so it has to be here, not just the fact a
+    // send happened.
     console.log(`[email:dev] Would send "${subject}" to ${recipients.join(', ')}`);
     if (text) console.log(`[email:dev] Body:\n${text}`);
     return;
