@@ -2,6 +2,7 @@ import React from 'react';
 import { InventoryItem } from '../../services/api';
 import { SimplePieChart } from '../charts/SimpleChart';
 import { getDaysToExpiry } from '../../utils/expiry';
+import { getSurplusAtExpiry } from '../../utils/stock';
 
 type Props = { items: InventoryItem[] };
 
@@ -22,18 +23,17 @@ const ExpiryToUsageEfficiency: React.FC<Props> = ({ items }) => {
   let totalUsed = 0;
   let totalWasted = 0;
 
+  // Split via the shared getSurplusAtExpiry rather than a local copy of
+  // `quantity - daily_usage * days`. The copy had drifted twice over: it read
+  // the typed daily_usage instead of the household's observed rate, and it
+  // still treated a missing rate as "none of it will be used", so this chart
+  // could show an item as entirely wasted while the inventory table showed no
+  // Overstocked badge for it.
   perishableItems.forEach((it) => {
-    const days = getDaysToExpiry(it.expiry_date);
-    if (days === null) return;
-    if (days < 0) {
-      totalWasted += it.quantity || 0;
-    } else {
-      const expectedConsumption = (it.daily_usage || 0) * days;
-      const used = Math.min(it.quantity || 0, expectedConsumption);
-      const wasted = Math.max(0, (it.quantity || 0) - expectedConsumption);
-      totalUsed += used;
-      totalWasted += wasted;
-    }
+    if (getDaysToExpiry(it.expiry_date) === null) return;
+    const wasted = getSurplusAtExpiry(it);
+    totalWasted += wasted;
+    totalUsed += Math.max(0, (it.quantity || 0) - wasted);
   });
 
   if (totalUsed === 0 && totalWasted === 0) {

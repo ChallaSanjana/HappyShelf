@@ -67,6 +67,15 @@ describe('CO2 quantities', () => {
     expect(getItemWasteCO2(makeItem({ quantity: 3, category: 'Meat' }))).toBe(30);
   });
 
+  test('an out-of-stock item emits nothing, because there is nothing left', () => {
+    // isWasted counts out-of-stock as wasted, and those items hold zero units.
+    // The PDF report had its own copy of this reading `(quantity || 1)`, so
+    // every out-of-stock item invented one unit's worth of emissions -- while
+    // the value column beside it, using `|| 0`, said the same item held none.
+    expect(getItemWasteCO2(makeItem({ quantity: 0, category: 'Dairy' }))).toBe(0);
+    expect(isWasted(makeItem({ quantity: 0, category: 'Dairy' }))).toBe(true);
+  });
+
   test('consumed CO2 uses the entry category', () => {
     const entry = {
       id: 'x',

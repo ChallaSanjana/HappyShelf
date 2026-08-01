@@ -22,7 +22,7 @@ Every chart in the app is drawn from records the household actually created — 
 - **Team management** — Admins and Managers add household members directly, choosing the member's initial password, and manage their roles. There is no email invitation flow; accounts are created ready to use.
 - **PDF Inventory Report** — single-click, branded, multi-page report covering inventory summary, category breakdown, complete inventory, low-stock report, expiry report, ML prediction summary, spending & cost analysis, sustainability report, and consumption history.
 - **Resilient by design** — outside production the backend falls back to an in-memory store when MongoDB is unreachable, and it always falls back to a JS heuristic when the ML service is unreachable, so local development is never blocked. In production a missing database is a startup failure rather than a silent data-loss trap.
-- **Tested** — 512 tests (250 backend, 202 frontend, 47 ML service, 13 end-to-end) run on every push (see `.github/workflows/ci.yml`). The E2E suite drives a real browser against a real backend.
+- **Tested** — 533 tests (254 backend, 219 frontend, 47 ML service, 13 end-to-end) run on every push (see `.github/workflows/ci.yml`). The E2E suite drives a real browser against a real backend.
 
 ## Tech Stack
 
@@ -202,8 +202,8 @@ Runs at `http://localhost:5173`.
 
 ## Available Scripts
 
-**Backend** (`backend/`): `npm run dev` (watch mode), `npm start`, `npm test` (250 tests), `npm run test:watch`
-**Frontend** (`frontend/`): `npm run dev`, `npm run build`, `npm run lint`, `npm run typecheck`, `npm test` (202 tests), `npm run test:watch`, `npm run test:coverage`, `npm run preview`
+**Backend** (`backend/`): `npm run dev` (watch mode), `npm start`, `npm test` (254 tests), `npm run test:watch`
+**Frontend** (`frontend/`): `npm run dev`, `npm run build`, `npm run lint`, `npm run typecheck`, `npm test` (219 tests), `npm run test:watch`, `npm run test:coverage`, `npm run preview`
 **End-to-end** (`frontend/`): `npm run test:e2e` (13 tests)
 **ML service** (`ml_service/`): `python -m uvicorn main:app --reload --port 8000`, `python -m pytest` (47 tests)
 

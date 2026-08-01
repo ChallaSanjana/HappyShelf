@@ -3,10 +3,10 @@ import autoTable from 'jspdf-autotable';
 import { InventoryItem, Stats, PredictionsResponse, ConsumptionHistoryEntry } from '../services/api';
 import { getDaysToExpiry, isExpired, isExpiredOrExpiringSoon, formatExpiryLabel } from './expiry';
 import { getSuggestedReorderQuantity } from './reorder';
-import { getDaysLeft, getStockStatus } from './stock';
+import { getDaysLeft, getStockStatus, getSurplusAtExpiry, getEffectiveDailyUsage } from './stock';
 // CO2 factors and the "wasted" definition are shared with the sustainability
 // widgets so the report can't quietly disagree with what's on screen.
-import { getCO2Factor, isWasted } from './sustainability';
+import { getItemWasteCO2, isWasted } from './sustainability';
 
 /**
  * Builds and downloads the "HappyShelf Inventory Report" PDF from data
@@ -456,8 +456,10 @@ export const generateInventoryReportPdf = ({
   const expiredValue = items
     .filter((i) => isExpired(i.expiry_date))
     .reduce((sum, i) => sum + (i.quantity || 0) * (i.cost_per_unit || 0), 0);
+  // Effective rate, so a projected monthly spend reflects what the household
+  // is observed to get through rather than the figure they typed once.
   const monthlyConsumptionCost = items.reduce(
-    (sum, i) => sum + (i.daily_usage || 0) * (i.cost_per_unit || 0) * 30,
+    (sum, i) => sum + getEffectiveDailyUsage(i) * (i.cost_per_unit || 0) * 30,
     0
   );
   addTable(
@@ -506,22 +508,27 @@ export const generateInventoryReportPdf = ({
     (sum, i) => sum + (i.quantity || 0) * (i.cost_per_unit || 0),
     0
   );
-  const totalWastedCO2 = wastedItems.reduce((sum, i) => sum + (i.quantity || 1) * getCO2Factor(i.category), 0);
+  // getItemWasteCO2, shared with the on-screen CO2 chart. The local copy this
+  // replaces read `(i.quantity || 1)`, so every out-of-stock item -- which
+  // isWasted includes, and which by definition holds zero units -- contributed
+  // one unit of emissions that does not exist. The line above it already used
+  // `|| 0` for the same items' value, so the two figures disagreed about how
+  // much stock an out-of-stock item has.
+  const totalWastedCO2 = wastedItems.reduce((sum, i) => sum + getItemWasteCO2(i), 0);
 
   let totalUsed = 0;
   let totalWastedQty = 0;
+  // Split via the shared getSurplusAtExpiry rather than a local copy of
+  // `quantity - daily_usage * days`, which read the typed rate instead of the
+  // household's observed one and treated a missing rate as total loss. The
+  // report and the Expiry -> Usage chart could disagree about the same item.
   items
     .filter((i) => i.expiry_date)
     .forEach((item) => {
-      const days = getDaysToExpiry(item.expiry_date);
-      if (days === null) return;
-      if (days < 0) {
-        totalWastedQty += item.quantity || 0;
-      } else {
-        const expectedConsumption = (item.daily_usage || 0) * days;
-        totalUsed += Math.min(item.quantity || 0, expectedConsumption);
-        totalWastedQty += Math.max(0, (item.quantity || 0) - expectedConsumption);
-      }
+      if (getDaysToExpiry(item.expiry_date) === null) return;
+      const wasted = getSurplusAtExpiry(item);
+      totalWastedQty += wasted;
+      totalUsed += Math.max(0, (item.quantity || 0) - wasted);
     });
   const usedBeforeExpiryPct =
     totalUsed + totalWastedQty > 0 ? (totalUsed / (totalUsed + totalWastedQty)) * 100 : null;

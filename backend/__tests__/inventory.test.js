@@ -591,6 +591,77 @@ describe('observed daily usage', () => {
     assert.equal(res.body.items[0].name, 'Rice');
   });
 
+  test('the suggested reorder covers a fortnight of observed usage', async () => {
+    const app = await getApp();
+    const { token, user } = await registerAdmin();
+    // Typed 2/day would top up to 28 and add 18. The household is observed to
+    // use 5/day, so a fortnight is 70 and they need 60 -- buying 18 would have
+    // run them out in under four days while the modal called it "~14 days".
+    const item = await createItem(token, { name: 'Rice', quantity: 10, daily_usage: 2 });
+    seedConsumption(user.householdId, item.id, { days: 10, quantity: 5 });
+
+    const res = await request(app)
+      .patch(`/api/inventory/items/${item.id}/reorder`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({})
+      .expect(200);
+
+    assert.equal(res.body.item.quantity, 70);
+    assert.equal(res.body.history.quantityAdded, 60);
+  });
+
+  test('too little history leaves the suggestion on the typed rate', async () => {
+    const app = await getApp();
+    const { token, user } = await registerAdmin();
+    const item = await createItem(token, { name: 'Rice', quantity: 10, daily_usage: 2 });
+    seedConsumption(user.householdId, item.id, { days: 3, quantity: 5 });
+
+    const res = await request(app)
+      .patch(`/api/inventory/items/${item.id}/reorder`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({})
+      .expect(200);
+
+    assert.equal(res.body.item.quantity, 28);
+  });
+
+  test('predictions forecast from the observed rate, and agree on the threshold', async () => {
+    const app = await getApp();
+    const { token, user } = await registerAdmin();
+    const item = await createItem(token, { name: 'Rice', quantity: 30, daily_usage: 1 });
+    seedConsumption(user.householdId, item.id, { days: 10, quantity: 15 });
+
+    const res = await request(app)
+      .get('/api/inventory/predictions')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+
+    const prediction = res.body.predictions[item.id];
+    // 15/day observed, not the typed 1/day.
+    assert.equal(prediction.demand_forecast[0], 15);
+    assert.equal(prediction.forecast_source, 'household_history');
+    // 30 units at 15/day is two days of runway -> the 0.95 band, not the 0.05
+    // baseline the typed rate's 30 days of runway would have produced.
+    assert.equal(prediction.low_stock_probability, 0.95);
+  });
+
+  test('a single consume is not enough to forecast from', async () => {
+    const app = await getApp();
+    const { token, user } = await registerAdmin();
+    const item = await createItem(token, { name: 'Rice', quantity: 30, daily_usage: 1 });
+    seedConsumption(user.householdId, item.id, { days: 1, quantity: 99 });
+
+    const res = await request(app)
+      .get('/api/inventory/predictions')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+
+    const prediction = res.body.predictions[item.id];
+    // The old private mean would have reported 99/day off one record.
+    assert.equal(prediction.demand_forecast[0], 1);
+    assert.equal(prediction.forecast_source, 'daily_usage_estimate');
+  });
+
   test('an action plan is built from the observed rate too', async () => {
     const app = await getApp();
     const { token, user } = await registerAdmin();

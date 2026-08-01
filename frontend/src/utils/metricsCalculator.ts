@@ -28,6 +28,23 @@ export const getWellManagedItems = (items: InventoryItem[]): InventoryItem[] =>
   );
 
 /**
+ * Percentage of the catalogue that is healthy on stock.
+ *
+ * Was computed inline in Dashboard as
+ * `(items - needsRestock(items) - outOfStock(items)) / items`, which
+ * subtracted out-of-stock items twice: `needsRestock` is `status !== healthy`,
+ * so it already contains every `out` item. With 2 low and 3 out of 10 items it
+ * reported 20% instead of 50%, and a majority-out inventory went negative and
+ * clamped to 0%. Counting the healthy items directly cannot double-count.
+ */
+export const getSupplyConfidence = (items: InventoryItem[]): number => {
+  const list = items || [];
+  if (list.length === 0) return 0;
+  const healthy = list.filter((item) => getStockStatus(item) === 'healthy').length;
+  return Math.round((healthy / list.length) * 100);
+};
+
+/**
  * Dashboard metrics, computed locally so the UI updates the instant an item
  * changes rather than waiting on a round trip.
  *

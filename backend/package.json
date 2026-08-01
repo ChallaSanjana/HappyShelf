@@ -5,8 +5,8 @@
   "scripts": {
     "dev": "node --watch src/server.js",
     "start": "node src/server.js",
-    "test": "cross-env NODE_ENV=test node --test \"__tests__/**/*.test.js\"",
-    "test:watch": "cross-env NODE_ENV=test node --test --watch \"__tests__/**/*.test.js\""
+    "test": "cross-env NODE_ENV=test ML_SERVICE_URL=http://127.0.0.1:1 node --test \"__tests__/**/*.test.js\"",
+    "test:watch": "cross-env NODE_ENV=test ML_SERVICE_URL=http://127.0.0.1:1 node --test --watch \"__tests__/**/*.test.js\""
   },
   "dependencies": {
     "bcrypt": "^5.1.1",

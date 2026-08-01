@@ -1,4 +1,5 @@
 import { InventoryItem } from '../services/api';
+import { getEffectiveDailyUsage } from './stock';
 
 /**
  * Mirrors calculateSuggestedReorderQuantity in inventoryController.js so the
@@ -12,7 +13,10 @@ import { InventoryItem } from '../services/api';
  * always a positive default even when already at/above target.
  */
 export const getSuggestedReorderQuantity = (item: InventoryItem): number => {
-    const twoWeekBuffer = Math.ceil((item.daily_usage || 0) * 14);
+    // getEffectiveDailyUsage, not item.daily_usage, so the preview matches
+    // what the server will compute -- and so "two weeks of usage" means two
+    // weeks of the household's observed usage where that is known.
+    const twoWeekBuffer = Math.ceil(getEffectiveDailyUsage(item) * 14);
     const minStock = item.min_stock_level || 0;
     const targetLevel = Math.max(minStock, twoWeekBuffer, 1);
     const currentQuantity = item.quantity || 0;
