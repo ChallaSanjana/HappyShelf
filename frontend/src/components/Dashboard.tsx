@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { inventoryApi, teamApi, TeamMember, InventoryItem, NewInventoryItem, Stats, PredictionsResponse, actionPlanApi, ActionPlan, ReorderHistoryEntry, ConsumptionHistoryEntry } from '../services/api';
-import { calculateMetrics } from '../utils/metricsCalculator';
+import { calculateMetrics, getSupplyConfidence } from '../utils/metricsCalculator';
+import { getForecastDemandUnits, countPredictedShortages } from '../utils/predictionSummary';
 import { StatCard } from './StatCard';
 import { InventoryExplorer } from './InventoryExplorer';
 import { ItemModal } from './ItemModal';
@@ -509,7 +510,11 @@ export const Dashboard = () => {
   // which is exactly why it needs its own surface.
   const getWasteRiskItems = () => items.filter(isAtWasteRisk);
 
-  const supplyConfidence = items.length === 0 ? 0 : Math.max(0, Math.min(100, Math.round(((items.length - getLowStockItems().length - getOutOfStockItems().length) / items.length) * 100)));
+  const supplyConfidence = getSupplyConfidence(items);
+  // Both from the ML service's own per-item output, which the charts directly
+  // below these tiles were already rendering.
+  const forecastDemandUnits = getForecastDemandUnits(predictions);
+  const predictedShortages = countPredictedShortages(items, predictions);
   // Units actually consumed in the last 30 days — a real activity figure,
   // replacing a "Recycling Rate" card that was really just the share of items
   // whose category name contained "produce"/"dairy"/etc. No recycling is
@@ -758,9 +763,16 @@ export const Dashboard = () => {
             <>
               <div className="mb-6">
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 mb-4">
-                  <StatCard title="Demand Forecast" value={stats?.totalItems || 0} icon={<Package className="w-6 h-6" />} color="blue" />
-                  <StatCard title="Supply Confidence" value={supplyConfidence} icon={<Download className="w-6 h-6" />} color="green" suffix="%" />
-                  <StatCard title="Predicted Shortages" value={stats?.lowStockItems || 0} icon={<AlertTriangle className="w-6 h-6" />} color="orange" />
+                  {/*
+                    "Demand Forecast" used to show stats.totalItems -- a count
+                    of items, not a forecast -- and "Predicted Shortages"
+                    showed stats.lowStockItems, i.e. what is low right now
+                    rather than what is predicted to become low. Both now read
+                    the ML output the charts below already use.
+                  */}
+                  <StatCard title="Forecast Demand (7 days)" value={forecastDemandUnits ?? 0} icon={<Package className="w-6 h-6" />} color="blue" suffix={forecastDemandUnits === null ? '' : ' units'} />
+                  <StatCard title="Items In Good Supply" value={supplyConfidence} icon={<Download className="w-6 h-6" />} color="green" suffix="%" />
+                  <StatCard title="Predicted Shortages (7 days)" value={predictedShortages} icon={<AlertTriangle className="w-6 h-6" />} color="orange" />
                 </div>
               </div>
 
