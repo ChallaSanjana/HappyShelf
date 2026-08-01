@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useAuth } from '../contexts/AuthContext';
-import { UserPlus, Leaf } from 'lucide-react';
+import { UserPlus, Leaf, Eye, EyeOff } from 'lucide-react';
 
 interface RegisterProps {
   onToggle: () => void;
@@ -12,6 +12,7 @@ export const Register = ({ onToggle }: RegisterProps) => {
   const [name, setName] = useState('');
   const [error, setError] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
   const { register } = useAuth();
 
   // Mirrors the backend rule in authController.js (MIN_PASSWORD_LENGTH = 8,
@@ -93,16 +94,28 @@ export const Register = ({ onToggle }: RegisterProps) => {
             <label className="block text-sm font-medium text-gray-700 mb-2" htmlFor="register-password">
               Password
             </label>
-            <input
-              id="register-password"
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent outline-none transition"
-              placeholder="••••••••"
-              required
-              minLength={8}
-            />
+            <div className="relative">
+              <input
+                id="register-password"
+                type={showPassword ? 'text' : 'password'}
+                autoComplete="new-password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                className="w-full pr-12 px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent outline-none transition"
+                placeholder="••••••••"
+                required
+                minLength={8}
+              />
+              <button
+                type="button"
+                onClick={() => setShowPassword((s) => !s)}
+                className="absolute inset-y-0 right-2 flex items-center px-2 text-gray-500 hover:text-gray-700 focus:outline-none"
+                aria-pressed={showPassword}
+                aria-label={showPassword ? 'Hide password' : 'Show password'}
+              >
+                {showPassword ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
+              </button>
+            </div>
             <p className="mt-1 text-xs text-gray-500">At least 8 characters, with a letter and a number.</p>
           </div>
 

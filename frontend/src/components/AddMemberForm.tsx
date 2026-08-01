@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { Eye, EyeOff } from 'lucide-react';
 import { useToast } from '../contexts/ToastContext';
 
 interface AddMemberFormProps {
@@ -15,6 +16,7 @@ export default function AddMemberForm({ onAdd, assignableRoles }: AddMemberFormP
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   const [role, setRole] = useState(assignableRoles.includes('Staff') ? 'Staff' : assignableRoles[0] || 'Staff');
 
   return (
@@ -36,14 +38,29 @@ export default function AddMemberForm({ onAdd, assignableRoles }: AddMemberFormP
           className="px-3 py-2 border rounded text-sm w-full"
           required
         />
-        <input
-          type="password"
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-          placeholder="Password (min 8 chars)"
-          className="px-3 py-2 border rounded text-sm w-full"
-          required
-        />
+        {/* Wrapped so the toggle can be positioned against the input rather
+            than the grid cell, which would otherwise stretch to the row's
+            height and float the icon away from the field. */}
+        <div className="relative w-full">
+          <input
+            type={showPassword ? 'text' : 'password'}
+            autoComplete="new-password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            placeholder="Password (min 8 chars)"
+            className="pr-10 px-3 py-2 border rounded text-sm w-full"
+            required
+          />
+          <button
+            type="button"
+            onClick={() => setShowPassword((s) => !s)}
+            className="absolute inset-y-0 right-1 flex items-center px-2 text-gray-500 hover:text-gray-700 focus:outline-none"
+            aria-pressed={showPassword}
+            aria-label={showPassword ? 'Hide password' : 'Show password'}
+          >
+            {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+          </button>
+        </div>
         <select
           value={role}
           onChange={(e) => setRole(e.target.value)}
