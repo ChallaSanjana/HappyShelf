@@ -82,7 +82,12 @@ export async function sendMail({ to, subject, text, html, direct = false }) {
 
   const t = getTransporter();
   if (!t) {
+    // Without this, an unconfigured deployment has no way to retrieve a
+    // password-reset link at all: the subject/recipient alone don't contain
+    // it, only the body does. This is the only place that link surfaces when
+    // SMTP is unset, so it has to be here, not just the fact a send happened.
     console.log(`[email:dev] Would send "${subject}" to ${recipients.join(', ')}`);
+    if (text) console.log(`[email:dev] Body:\n${text}`);
     return;
   }
 
