@@ -7,6 +7,7 @@ import { devUsers } from '../store/devStore.js';
 import { queryInventoryItems } from '../utils/inventoryQuery.js';
 import {
   getStockStatus,
+  getEffectiveDailyUsage,
   getDaysToExpiry,
   estimateLowStockProbability,
   calculateRefillDate,
@@ -130,6 +131,20 @@ async function notifyIfStockStatusWorsened(householdId, itemBefore, itemAfter) {
  * being computed from what the household actually consumes rather than a
  * number somebody typed when they first added the item.
  */
+/**
+ * The observed rate for a single item, or undefined when it has too little
+ * history. For paths that load one document rather than the whole list.
+ */
+export async function observedUsageForItem(householdId, itemId) {
+  try {
+    const history = await getConsumptionHistoryForMl(householdId);
+    return observedDailyUsageByItem(history).get(String(itemId));
+  } catch (error) {
+    console.warn('Could not derive observed usage:', error.message);
+    return undefined;
+  }
+}
+
 export async function withObservedUsage(householdId, items) {
   try {
     const history = await getConsumptionHistoryForMl(householdId);
@@ -537,8 +552,16 @@ export const updateItem = async (req, res) => {
 // when the item is already at or above target. This is only a *default* —
 // the frontend shows it in a preview/edit modal before submitting, and
 // reorderItem below accepts an explicit override.
-function calculateSuggestedReorderQuantity(item) {
-  const twoWeekBuffer = Math.ceil((item.daily_usage || 0) * 14);
+function calculateSuggestedReorderQuantity(item, observedDailyUsage) {
+  // The observed rate where the household has one, so a suggestion built on
+  // "two weeks of usage" means two weeks of *their* usage. Passed in rather
+  // than read off the item because both call sites load a single document
+  // directly, without going through withObservedUsage.
+  const dailyUsage = getEffectiveDailyUsage({
+    daily_usage: item.daily_usage,
+    observed_daily_usage: observedDailyUsage,
+  });
+  const twoWeekBuffer = Math.ceil(dailyUsage * 14);
   const minStock = item.min_stock_level || 0;
   const targetLevel = Math.max(minStock, twoWeekBuffer, 1);
   const currentQuantity = item.quantity || 0;
@@ -574,7 +597,13 @@ export const reorderItem = async (req, res) => {
       if (!item) {
         return res.status(404).json({ error: 'Item not found' });
       }
-      const reorderQty = requestedQty !== undefined ? requestedQty : calculateSuggestedReorderQuantity(item);
+      const reorderQty =
+        requestedQty !== undefined
+          ? requestedQty
+          : calculateSuggestedReorderQuantity(
+              item,
+              await observedUsageForItem(req.user.householdId, item.id)
+            );
       item.quantity = item.quantity + reorderQty;
       // Advancing purchase_date to today would otherwise leave a stale
       // expiry_date from before the restock in place, violating the
@@ -613,7 +642,13 @@ export const reorderItem = async (req, res) => {
       return res.status(404).json({ error: 'Item not found' });
     }
 
-    const reorderQty = requestedQty !== undefined ? requestedQty : calculateSuggestedReorderQuantity(existingItem);
+    const reorderQty =
+      requestedQty !== undefined
+        ? requestedQty
+        : calculateSuggestedReorderQuantity(
+            existingItem,
+            await observedUsageForItem(req.user.householdId, existingItem.id)
+          );
 
     // Advancing purchase_date to today would otherwise leave a stale
     // expiry_date from before the restock in place, violating the "expiry
@@ -974,31 +1009,6 @@ async function getConsumptionHistoryForMl(householdId) {
  * fallback so it doesn't have to rely purely on the static `daily_usage`
  * figure a user typed in months ago.
  */
-function meanDailyConsumptionByItem(history) {
-  const totals = new Map();
-
-  for (const record of history) {
-    const key = String(record.item_id);
-    const at = new Date(record.consumed_at).getTime();
-    if (!Number.isFinite(at)) continue;
-
-    const current = totals.get(key) || { total: 0, earliest: at, latest: at };
-    current.total += Number(record.quantity_consumed) || 0;
-    current.earliest = Math.min(current.earliest, at);
-    current.latest = Math.max(current.latest, at);
-    totals.set(key, current);
-  }
-
-  const means = new Map();
-  for (const [key, { total, earliest, latest }] of totals) {
-    // At least a day of span so a single burst of consumes on one day can't
-    // divide by ~0 and report an absurd daily rate.
-    const spanDays = Math.max(1, (latest - earliest) / (24 * 60 * 60 * 1000));
-    means.set(key, total / spanDays);
-  }
-  return means;
-}
-
 export const getPredictions = async (req, res) => {
   try {
     let items;
@@ -1063,7 +1073,12 @@ export const getPredictions = async (req, res) => {
     // from, so an item with real usage data gets a forecast grounded in that
     // rather than in the static daily_usage figure alone.
     const predictions = {};
-    const observedDailyUsage = meanDailyConsumptionByItem(consumptionHistory);
+    // observedDailyUsageByItem, the same derivation days-left, low stock and
+    // waste risk use. This used to be a second, private implementation with no
+    // minimum history and a fractional span, so it reported a different rate
+    // for the same item -- and would forecast from a single consume event,
+    // which is exactly what the 8-distinct-day threshold exists to prevent.
+    const observedDailyUsage = observedDailyUsageByItem(consumptionHistory);
     let totalScore = 0;
 
     items.forEach((item) => {
@@ -1084,7 +1099,14 @@ export const getPredictions = async (req, res) => {
         else if (daysToExpiry < 10) expiry_risk = 'Medium';
       }
 
-      const low_stock_probability = estimateLowStockProbability(item);
+      // Through the same effective rate as baseDaily above. Passing `item`
+      // raw would have used the typed daily_usage, so the fallback's
+      // probability disagreed with the dashboard's for the same item.
+      const low_stock_probability = estimateLowStockProbability({
+        quantity: item.quantity,
+        daily_usage: item.daily_usage,
+        observed_daily_usage: hasObserved ? observed : undefined,
+      });
 
       // Shared with the ML service's calculate_refill_date, including the
       // horizon beyond which no date is returned. Computing it inline here
