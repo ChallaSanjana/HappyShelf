@@ -22,6 +22,8 @@ interface RawFixtureItem {
   category: string;
   quantity: number;
   daily_usage: number;
+  /** Present only where the fixture pins the observed-rate-wins behaviour. */
+  observed_daily_usage?: number;
   expiryOffsetDays: number | null;
   unit: string;
   min_stock_level: number | null;
@@ -43,7 +45,6 @@ interface RawFixtures {
     wasteRiskValue: number;
     categoryCounts: Record<string, number>;
     predictedSavings: number;
-    carbonReduced: number;
   };
 }
 

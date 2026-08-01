@@ -1,7 +1,7 @@
 import mongoose from 'mongoose';
 import Item from '../models/Item.js';
 import ActionPlan from '../models/ActionPlan.js';
-import { getUserItems } from './inventoryController.js';
+import { getUserItems, withObservedUsage } from './inventoryController.js';
 import {
     getStockStatus,
     getDaysToExpiry,
@@ -134,7 +134,7 @@ export const createActionPlan = async (req, res) => {
         const planTitle = (typeof title === 'string' && title.trim()) || `Action Plan — ${new Date().toLocaleDateString()}`;
 
         if (!isDbConnected()) {
-            const items = getUserItems(householdId);
+            const items = await withObservedUsage(householdId, getUserItems(householdId));
             const tasks = buildTasksFromItems(items);
 
             if (tasks.length === 0) {
@@ -158,7 +158,11 @@ export const createActionPlan = async (req, res) => {
             });
         }
 
-        const items = await Item.find({ household_id: householdId });
+        // Through withObservedUsage so a plan is built from the same numbers
+        // the dashboard shows. Without it an item the dashboard calls low —
+        // because the household is observed to consume it faster than the rate
+        // they typed — would silently produce no restock task.
+        const items = await withObservedUsage(householdId, await Item.find({ household_id: householdId }));
         const tasks = buildTasksFromItems(items);
 
         if (tasks.length === 0) {

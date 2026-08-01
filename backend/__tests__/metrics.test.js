@@ -5,6 +5,7 @@ import {
   getStockStatus,
   getExpiryStatus,
   getDaysLeft,
+  getEffectiveDailyUsage,
   isExpiredOrExpiringSoon,
   isExpired,
   calculateStats,
@@ -193,8 +194,31 @@ describe('waste risk (overstock relative to shelf life)', () => {
     assert.equal(isAtWasteRisk({ quantity: 1000, daily_usage: 0, expiry_date: null }), false);
   });
 
-  test('nothing consumed means all of it is at risk', () => {
-    assert.equal(getSurplusAtExpiry({ quantity: 40, daily_usage: 0, expiry_date: daysFromNow(3) }), 40);
+  test('no usage rate makes no claim, rather than flagging everything', () => {
+    // Previously this returned the whole quantity — the strongest possible
+    // warning from the least possible information. Not reachable via the API
+    // (itemValidation requires daily_usage > 0), but the schema allows 0 and
+    // defaults to it, so imported and migrated rows still land here.
+    assert.equal(getSurplusAtExpiry({ quantity: 40, daily_usage: 0, expiry_date: daysFromNow(3) }), 0);
+    assert.equal(isAtWasteRisk({ quantity: 40, daily_usage: 0, expiry_date: daysFromNow(3) }), false);
+  });
+
+  test('but an item already past its date is still waste, rate or no rate', () => {
+    // This is an observation about what already happened, not a projection,
+    // so it holds whether or not a usage rate is known.
+    assert.equal(getSurplusAtExpiry({ quantity: 40, daily_usage: 0, expiry_date: daysFromNow(-1) }), 40);
+    assert.equal(isAtWasteRisk({ quantity: 40, daily_usage: 0, expiry_date: daysFromNow(-1) }), true);
+  });
+
+  test('an observed rate is preferred over the typed one', () => {
+    // Typed 10/day would consume all 40 within the 4 days remaining and look
+    // fine; the household is actually observed to use 1/day, leaving 36.
+    const item = {
+      quantity: 40, daily_usage: 10, observed_daily_usage: 1,
+      expiry_date: daysFromNow(4),
+    };
+    assert.equal(getSurplusAtExpiry(item), 36);
+    assert.equal(isAtWasteRisk(item), true);
   });
 
   test('already expired means none of it gets used', () => {
@@ -214,8 +238,9 @@ describe('waste risk (overstock relative to shelf life)', () => {
   });
 
   test('value is the surplus priced at cost, 0 without one', () => {
-    assert.equal(getWasteRiskValue({ quantity: 40, daily_usage: 0, expiry_date: daysFromNow(3), cost_per_unit: 25 }), 1000);
-    assert.equal(getWasteRiskValue({ quantity: 40, daily_usage: 0, expiry_date: daysFromNow(3), cost_per_unit: null }), 0);
+    // Already expired, so the whole quantity is surplus regardless of rate.
+    assert.equal(getWasteRiskValue({ quantity: 40, daily_usage: 0, expiry_date: daysFromNow(-1), cost_per_unit: 25 }), 1000);
+    assert.equal(getWasteRiskValue({ quantity: 40, daily_usage: 0, expiry_date: daysFromNow(-1), cost_per_unit: null }), 0);
   });
 
   test('does not change stock or expiry status', () => {
@@ -239,6 +264,37 @@ describe('getDaysLeft', () => {
 
   test('treats missing fields as zero rather than producing NaN', () => {
     assert.equal(getDaysLeft({}), Infinity);
+  });
+
+  test('divides by the observed rate when one is known', () => {
+    // The typed 2/day says 5 days left; the household is observed to get
+    // through 5/day, so they actually have 2.
+    const item = { quantity: 10, daily_usage: 2, observed_daily_usage: 5 };
+    assert.equal(getDaysLeft(item), 2);
+    assert.equal(getStockStatus(item), 'low');
+  });
+});
+
+describe('getEffectiveDailyUsage', () => {
+  test('prefers what the household is observed to consume', () => {
+    assert.equal(getEffectiveDailyUsage({ daily_usage: 2, observed_daily_usage: 5 }), 5);
+  });
+
+  test('falls back to the typed rate when there is no observation', () => {
+    assert.equal(getEffectiveDailyUsage({ daily_usage: 2 }), 2);
+    assert.equal(getEffectiveDailyUsage({ daily_usage: 2, observed_daily_usage: null }), 2);
+  });
+
+  test('ignores an unusable observation rather than trusting it', () => {
+    // A zero or negative rate would silently turn days-left into Infinity.
+    assert.equal(getEffectiveDailyUsage({ daily_usage: 2, observed_daily_usage: 0 }), 2);
+    assert.equal(getEffectiveDailyUsage({ daily_usage: 2, observed_daily_usage: -1 }), 2);
+    assert.equal(getEffectiveDailyUsage({ daily_usage: 2, observed_daily_usage: NaN }), 2);
+    assert.equal(getEffectiveDailyUsage({ daily_usage: 2, observed_daily_usage: '5' }), 2);
+  });
+
+  test('missing both is 0, not NaN', () => {
+    assert.equal(getEffectiveDailyUsage({}), 0);
   });
 });
 
@@ -313,7 +369,12 @@ describe('calculateStats', () => {
     // full value.
     const wellManaged = getWellManagedItems(fixtureItems).map((i) => i.id);
     assert.ok(!wellManaged.includes('low-by-min-stock'));
-    assert.deepEqual(wellManaged.sort(), ['healthy-1', 'healthy-no-expiry', 'no-cost-recorded']);
+    assert.deepEqual(wellManaged.sort(), [
+      'dated-but-untracked',
+      'healthy-1',
+      'healthy-no-expiry',
+      'no-cost-recorded',
+    ]);
   });
 
   test('handles an empty inventory without dividing by zero', () => {
@@ -326,7 +387,6 @@ describe('calculateStats', () => {
       wasteRiskValue: 0,
       categoryCounts: {},
       predictedSavings: 0,
-      carbonReduced: 0,
     });
   });
 

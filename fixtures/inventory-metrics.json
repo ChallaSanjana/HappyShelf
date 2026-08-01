@@ -113,6 +113,29 @@
       "cost_per_unit": 30
     },
     {
+      "id": "dated-but-untracked",
+      "name": "Paracetamol",
+      "category": "Health",
+      "quantity": 20,
+      "daily_usage": 0,
+      "expiryOffsetDays": 60,
+      "unit": "pcs",
+      "min_stock_level": null,
+      "cost_per_unit": 15
+    },
+    {
+      "id": "observed-faster-than-typed",
+      "name": "Oats",
+      "category": "Grains",
+      "quantity": 10,
+      "daily_usage": 1,
+      "observed_daily_usage": 5,
+      "expiryOffsetDays": 90,
+      "unit": "kg",
+      "min_stock_level": null,
+      "cost_per_unit": 80
+    },
+    {
       "id": "comfortably-consumed",
       "name": "Bananas",
       "category": "Produce",
@@ -128,13 +151,16 @@
     "stockStatus, per item id — 'low-by-min-stock' is the case that used to",
     "disagree between the dashboard and the alert emails.",
     "",
-    "stats.lowStockItems counts 'low' AND 'out' (3: low-by-days,",
-    "low-by-min-stock, out-of-stock).",
-    "expiringSoon counts expiring-soon AND already-expired (2).",
-    "wellManaged is everything healthy on stock and not expiring:",
-    "healthy-1, healthy-no-expiry, no-cost-recorded (3).",
-    "predictedSavings = 100*60 + 50*20 + 30*0 = 7000.",
-    "carbonReduced = 3 * 0.5 = 1.5."
+    "stats.lowStockItems counts 'low' AND 'out'.",
+    "expiringSoon counts expiring-soon AND already-expired.",
+    "wellManaged is everything healthy on stock and not expiring.",
+    "",
+    "'observed_daily_usage' is the rate derived from the household's logged",
+    "consumption (backend/src/utils/observedUsage.js). Where present it is",
+    "used INSTEAD of the typed daily_usage by every rule below —",
+    "'observed-faster-than-typed' exists to pin that: typed 1/day would give",
+    "it 10 days of runway and a 'healthy' status, but the household is",
+    "observed to get through 5/day, so it is genuinely low."
   ],
   "expectedStockStatus": {
     "healthy-1": "healthy",
@@ -144,7 +170,9 @@
     "out-of-stock": "out",
     "expiring-soon": "healthy",
     "already-expired": "healthy",
-    "no-cost-recorded": "healthy"
+    "no-cost-recorded": "healthy",
+    "dated-but-untracked": "healthy",
+    "observed-faster-than-typed": "low"
   },
   "_lowStockProbabilityNote": [
     "estimateLowStockProbability considers days of runway ONLY, not",
@@ -159,7 +187,10 @@
     "out-of-stock:       0/2     = 0 days    -> 0.95",
     "expiring-soon:      40/1    = 40 days   -> 0.05",
     "already-expired:    5/0.5   = 10 days   -> 0.05 (10 is not < 10)",
-    "no-cost-recorded:   30/0.2  = 150 days  -> 0.05"
+    "no-cost-recorded:   30/0.2  = 150 days  -> 0.05",
+    "dated-but-untracked: no usage = Infinity -> 0.05",
+    "observed-faster-than-typed: 10/5 = 2 days -> 0.95 (typed 1/day would",
+    "                    have said 10 days and reported the 0.05 baseline)"
   ],
   "expectedLowStockProbability": {
     "healthy-1": 0.05,
@@ -169,7 +200,9 @@
     "out-of-stock": 0.95,
     "expiring-soon": 0.05,
     "already-expired": 0.05,
-    "no-cost-recorded": 0.05
+    "no-cost-recorded": 0.05,
+    "dated-but-untracked": 0.05,
+    "observed-faster-than-typed": 0.95
   },
   "expectedExpiryStatus": {
     "healthy-1": "healthy",
@@ -179,34 +212,41 @@
     "out-of-stock": "healthy",
     "expiring-soon": "expiring_soon",
     "already-expired": "expired",
-    "no-cost-recorded": "healthy"
+    "no-cost-recorded": "healthy",
+    "dated-but-untracked": "healthy",
+    "observed-faster-than-typed": "healthy"
   },
   "expectedStats": {
-    "totalItems": 10,
-    "lowStockItems": 4,
+    "totalItems": 12,
+    "lowStockItems": 5,
     "outOfStockItems": 1,
     "expiringSoon": 3,
     "wasteRiskItems": 3,
     "wasteRiskValue": 4095,
     "categoryCounts": {
-      "Grains": 1,
+      "Grains": 2,
       "Condiments": 2,
       "Dairy": 2,
       "Household": 1,
       "Beverages": 1,
       "Bakery": 1,
-      "Produce": 2
+      "Produce": 2,
+      "Health": 1
     },
-    "predictedSavings": 7000,
-    "carbonReduced": 1.5
+    "predictedSavings": 7300
   },
   "_wasteRiskNote": [
     "Overstock relative to shelf life. A SEPARATE axis from stock and expiry",
     "status -- neither of those meanings changed.",
     "",
     "surplus = quantity - daily_usage * daysToExpiry, floored at 0.",
-    "No expiry date, or zero quantity -> 0. No consumption, or already past",
-    "the date -> the whole quantity. At risk when surplus/quantity > 0.10.",
+    "No expiry date, zero quantity, or NO KNOWN USAGE RATE -> 0. Already past",
+    "the date -> the whole quantity, rate known or not. At risk when",
+    "surplus/quantity > 0.10.",
+    "",
+    "A missing usage rate deliberately makes no claim. It used to mean 'none",
+    "of it will be used', which flagged every spice, cleaning product and",
+    "medicine carrying an expiry date as 100% overstocked.",
     "",
     "healthy-1             : 100 - 1*90  = 10 of 100 -> exactly 0.10, NOT > -> safe",
     "healthy-no-expiry     : no expiry date                            -> safe",
@@ -218,6 +258,8 @@
     "no-cost-recorded      : 30 - 0.2*200 = 0                          -> safe",
     "overstocked-perishable: 100 - 0.2*5 = 99 of 100 -> 0.99           -> AT RISK",
     "comfortably-consumed  : 5 - 2*10 = -15 -> 0 surplus               -> safe",
+    "dated-but-untracked   : dated, but no usage rate to project from  -> safe",
+    "observed-faster-than-typed: 10 - 5*90 -> 0 surplus                -> safe",
     "",
     "wasteRiskValue = 37*25 + 5*40 + 99*30 = 925 + 200 + 2970 = 4095.",
     "",
@@ -234,6 +276,8 @@
     "already-expired": true,
     "no-cost-recorded": false,
     "overstocked-perishable": true,
-    "comfortably-consumed": false
+    "comfortably-consumed": false,
+    "dated-but-untracked": false,
+    "observed-faster-than-typed": false
   }
 }

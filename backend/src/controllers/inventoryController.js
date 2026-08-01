@@ -15,6 +15,7 @@ import {
 } from '../utils/inventoryMetrics.js';
 import { validateNewItem, parseNumericFields, VALID_UNITS } from '../utils/itemValidation.js';
 import { buildDevHistoryBase } from '../utils/historyJson.js';
+import { observedDailyUsageByItem, attachObservedUsage } from '../utils/observedUsage.js';
 import { sendStockAlert } from '../utils/mailer.js';
 import { recordAudit, AUDIT_ACTIONS } from '../utils/auditLog.js';
 
@@ -31,7 +32,10 @@ const devReorderHistory = new Map();
 let nextHistoryId = 1;
 
 // In-memory consumption history, same pattern as devReorderHistory above.
-const devConsumptionHistory = new Map();
+// Exported like devInventory so the test harness can reset it and seed
+// backdated entries — the observed usage rules need weeks of history, which
+// no sequence of live API calls can produce.
+export const devConsumptionHistory = new Map();
 let nextConsumptionHistoryId = 1;
 
 export function getUserItems(userId) {
@@ -117,6 +121,27 @@ async function notifyIfStockStatusWorsened(householdId, itemBefore, itemAfter) {
   }
 }
 
+/**
+ * The household's items with `observed_daily_usage` attached wherever their
+ * consumption log supports one.
+ *
+ * Costs one extra indexed, bounded query per call. That is a fair price for
+ * every derived figure — days left, low stock, waste risk, refill date —
+ * being computed from what the household actually consumes rather than a
+ * number somebody typed when they first added the item.
+ */
+export async function withObservedUsage(householdId, items) {
+  try {
+    const history = await getConsumptionHistoryForMl(householdId);
+    return attachObservedUsage(items, observedDailyUsageByItem(history));
+  } catch (error) {
+    // Never fail a read because the usage refinement was unavailable; the
+    // typed daily_usage remains a perfectly serviceable fallback.
+    console.warn('Could not derive observed usage:', error.message);
+    return items;
+  }
+}
+
 export const getItems = async (req, res) => {
   try {
     let items;
@@ -125,6 +150,8 @@ export const getItems = async (req, res) => {
     } else {
       items = await Item.find({ household_id: req.user.householdId }).sort({ createdAt: -1 });
     }
+
+    items = await withObservedUsage(req.user.householdId, items);
 
     // Only the Inventory page's search/filter/sort/pagination toolbar sends
     // these; every other caller (stats, ML predictions, the PDF report)
@@ -890,6 +917,8 @@ export const getStats = async (req, res) => {
     } else {
       items = await Item.find({ household_id: req.user.householdId });
     }
+
+    items = await withObservedUsage(req.user.householdId, items);
 
     res.json(calculateStats(items));
   } catch (error) {

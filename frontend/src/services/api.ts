@@ -9,6 +9,15 @@ export interface InventoryItem {
   category: string;
   quantity: number;
   daily_usage: number;
+  /**
+   * Units/day the household is actually observed to consume, derived from
+   * their logged Consume events and attached by the server. Absent when an
+   * item has too little history to trust — see getEffectiveDailyUsage in
+   * utils/stock.ts, which falls back to `daily_usage`.
+   *
+   * Server-derived, so it is not part of NewInventoryItem and never sent back.
+   */
+  observed_daily_usage?: number;
   expiry_date: string | null;
   unit: 'pcs' | 'kg' | 'g' | 'L' | 'ml' | 'packs' | 'bottles' | 'boxes' | 'other';
   purchase_date?: string | null;
@@ -19,7 +28,10 @@ export interface InventoryItem {
   updated_at: string;
 }
 
-export type NewInventoryItem = Omit<InventoryItem, 'id' | 'householdId' | 'created_at' | 'updated_at'>;
+export type NewInventoryItem = Omit<
+  InventoryItem,
+  'id' | 'householdId' | 'created_at' | 'updated_at' | 'observed_daily_usage'
+>;
 
 export interface Stats {
   totalItems: number;
@@ -32,7 +44,6 @@ export interface Stats {
   wasteRiskValue: number;
   categoryCounts: Record<string, number>;
   predictedSavings: number;
-  carbonReduced: number;
 }
 
 export type StockStatusFilter = 'out' | 'low' | 'healthy';

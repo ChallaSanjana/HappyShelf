@@ -22,8 +22,30 @@ export const LOW_STOCK_DAYS = 3;
 /** Items expiring within this many days count as "expiring soon". */
 export const EXPIRY_WINDOW_DAYS = 7;
 
-/** Rough kg of CO2 avoided per item kept out of the bin. */
-export const CARBON_PER_WELL_MANAGED_ITEM = 0.5;
+/**
+ * The usage rate to reason with: what the household is *observed* to consume
+ * where that is known, otherwise the rate they typed in.
+ *
+ * `daily_usage` is entered once when an item is created and realistically
+ * never revisited, yet every derived number leans on it — days left, low
+ * stock, waste risk, the refill date. Meanwhile every Consume action is
+ * logged with a timestamp, so the real rate is usually knowable. Preferring
+ * the evidence means the app stops telling someone they have three days left
+ * based on a guess it can already prove wrong.
+ *
+ * `observed_daily_usage` is attached by the backend (see
+ * withObservedUsage in inventoryController) and simply absent when an item
+ * has too little history to be worth trusting; the typed value is the
+ * fallback, not the exception. Same tiering the ML demand forecast already
+ * uses, applied to the arithmetic the rest of the app runs on.
+ */
+export function getEffectiveDailyUsage(item) {
+  const observed = item.observed_daily_usage;
+  if (typeof observed === 'number' && Number.isFinite(observed) && observed > 0) {
+    return observed;
+  }
+  return item.daily_usage ?? 0;
+}
 
 /**
  * Days of stock left at the current usage rate. Infinity when nothing is
@@ -31,7 +53,7 @@ export const CARBON_PER_WELL_MANAGED_ITEM = 0.5;
  */
 export function getDaysLeft(item) {
   const quantity = item.quantity ?? 0;
-  const dailyUsage = item.daily_usage ?? 0;
+  const dailyUsage = getEffectiveDailyUsage(item);
   return dailyUsage > 0 ? quantity / dailyUsage : Infinity;
 }
 
@@ -184,8 +206,8 @@ export function getExpiryStatus(item) {
  * most of it is going in the bin: 1314 units consumed at 0.2/day cannot be
  * used up before tomorrow, whatever the other two columns say.
  *
- * Returns 0 when there is no expiry date, no consumption to project, or the
- * item will comfortably be finished in time.
+ * Returns 0 when the question doesn't apply: no expiry date, nothing in
+ * stock, or no usage rate to project from.
  */
 export function getSurplusAtExpiry(item) {
   const days = getDaysToExpiry(item.expiry_date);
@@ -194,16 +216,25 @@ export function getSurplusAtExpiry(item) {
   const quantity = item.quantity ?? 0;
   if (quantity <= 0) return 0;
 
-  const dailyUsage = item.daily_usage ?? 0;
-  // Nothing is being consumed, so nothing will be used before it expires —
-  // the whole quantity is at risk.
-  if (dailyUsage <= 0) return quantity;
-
-  // Already past its date: none of the remaining stock gets used.
+  // Already past its date: none of the remaining stock gets used. Checked
+  // before the usage rate, because this is an observation about what has
+  // already happened rather than a projection, and holds either way.
   if (days <= 0) return quantity;
 
-  const consumableBeforeExpiry = dailyUsage * days;
-  return Math.max(0, quantity - consumableBeforeExpiry);
+  // No usage rate means there is nothing to project from, so no claim gets
+  // made. Previously this returned the whole quantity — reading "we don't
+  // know how fast this is used" as "none of it will be used", i.e. the
+  // strongest possible warning from the least possible information.
+  //
+  // itemValidation requires daily_usage > 0, so this isn't reachable through
+  // create or update today. It is still wrong to leave in place: the schema
+  // allows 0 and *defaults* to it, so imported, migrated or pre-validation
+  // documents carry it, and the client mirror computes from whatever the API
+  // returns.
+  const dailyUsage = getEffectiveDailyUsage(item);
+  if (dailyUsage <= 0) return 0;
+
+  return Math.max(0, quantity - dailyUsage * days);
 }
 
 /**
@@ -279,11 +310,6 @@ export function calculateStats(items) {
     wellManaged.reduce((sum, item) => sum + (item.quantity || 0) * (item.cost_per_unit || 0), 0)
   );
 
-  const carbonReduced =
-    totalItems > 0
-      ? Math.round(wellManaged.length * CARBON_PER_WELL_MANAGED_ITEM * 100) / 100
-      : 0;
-
   return {
     totalItems,
     lowStockItems,
@@ -293,6 +319,5 @@ export function calculateStats(items) {
     wasteRiskValue,
     categoryCounts,
     predictedSavings,
-    carbonReduced,
   };
 }

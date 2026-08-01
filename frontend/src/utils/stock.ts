@@ -19,16 +19,40 @@ export type StockStatus = 'out' | 'low' | 'healthy';
 /** Days of remaining supply below which an item counts as low. */
 export const LOW_STOCK_DAYS = 3;
 
-/** Rough kg of CO2 avoided per item kept out of the bin. */
-export const CARBON_PER_WELL_MANAGED_ITEM = 0.5;
+/**
+ * The usage rate to reason with: what the household is *observed* to consume
+ * where that is known, otherwise the rate they typed in.
+ *
+ * `daily_usage` is entered once when an item is created and realistically
+ * never revisited, yet every derived number leans on it — days left, low
+ * stock, waste risk, the refill date. Meanwhile every Consume action is
+ * logged with a timestamp, so the real rate is usually knowable. Preferring
+ * the evidence means the app stops telling someone they have three days left
+ * based on a guess it can already prove wrong.
+ *
+ * `observed_daily_usage` is attached by the backend (see withObservedUsage in
+ * inventoryController) and simply absent when an item has too little history
+ * to be worth trusting; the typed value is the fallback, not the exception.
+ */
+export const getEffectiveDailyUsage = (
+  item: Pick<InventoryItem, 'daily_usage' | 'observed_daily_usage'>
+): number => {
+  const observed = item.observed_daily_usage;
+  if (typeof observed === 'number' && Number.isFinite(observed) && observed > 0) {
+    return observed;
+  }
+  return item.daily_usage ?? 0;
+};
 
 /**
  * Days of stock left at the current usage rate. Infinity when nothing is
  * being consumed — an item with no usage never runs out on its own.
  */
-export const getDaysLeft = (item: Pick<InventoryItem, 'quantity' | 'daily_usage'>): number => {
+export const getDaysLeft = (
+  item: Pick<InventoryItem, 'quantity' | 'daily_usage' | 'observed_daily_usage'>
+): number => {
   const quantity = item.quantity ?? 0;
-  const dailyUsage = item.daily_usage ?? 0;
+  const dailyUsage = getEffectiveDailyUsage(item);
   return dailyUsage > 0 ? quantity / dailyUsage : Infinity;
 };
 
@@ -39,7 +63,7 @@ export const getDaysLeft = (item: Pick<InventoryItem, 'quantity' | 'daily_usage'
  * made the dashboard and the alert emails contradict each other.
  */
 export const getStockStatus = (
-  item: Pick<InventoryItem, 'quantity' | 'daily_usage' | 'min_stock_level'>
+  item: Pick<InventoryItem, 'quantity' | 'daily_usage' | 'observed_daily_usage' | 'min_stock_level'>
 ): StockStatus => {
   if ((item.quantity ?? 0) <= 0) return 'out';
 
@@ -51,7 +75,7 @@ export const getStockStatus = (
 
 /** True when the item needs restock attention — i.e. it is low or already out. */
 export const needsRestock = (
-  item: Pick<InventoryItem, 'quantity' | 'daily_usage' | 'min_stock_level'>
+  item: Pick<InventoryItem, 'quantity' | 'daily_usage' | 'observed_daily_usage' | 'min_stock_level'>
 ): boolean => getStockStatus(item) !== 'healthy';
 
 /**
@@ -65,7 +89,7 @@ export const needsRestock = (
  * the shared fixtures run both.
  */
 export const getSurplusAtExpiry = (
-  item: Pick<InventoryItem, 'quantity' | 'daily_usage' | 'expiry_date'>
+  item: Pick<InventoryItem, 'quantity' | 'daily_usage' | 'observed_daily_usage' | 'expiry_date'>
 ): number => {
   const days = getDaysToExpiry(item.expiry_date);
   if (days === null) return 0;
@@ -73,19 +97,30 @@ export const getSurplusAtExpiry = (
   const quantity = item.quantity ?? 0;
   if (quantity <= 0) return 0;
 
-  const dailyUsage = item.daily_usage ?? 0;
-  // Nothing is being consumed, so none of it gets used before it expires.
-  if (dailyUsage <= 0) return quantity;
-
-  // Already past its date: none of the remaining stock gets used.
+  // Already past its date: none of the remaining stock gets used. Checked
+  // before the usage rate, because this is an observation about what has
+  // already happened rather than a projection, and holds either way.
   if (days <= 0) return quantity;
+
+  // No usage rate means there is nothing to project from, so no claim gets
+  // made. Previously this returned the whole quantity — reading "we don't
+  // know how fast this is used" as "none of it will be used", i.e. the
+  // strongest possible warning from the least possible information.
+  //
+  // itemValidation requires daily_usage > 0, so this isn't reachable through
+  // create or update today. It is still wrong to leave in place: the schema
+  // allows 0 and *defaults* to it, so imported, migrated or pre-validation
+  // documents carry it, and the client mirror computes from whatever the API
+  // returns.
+  const dailyUsage = getEffectiveDailyUsage(item);
+  if (dailyUsage <= 0) return 0;
 
   return Math.max(0, quantity - dailyUsage * days);
 };
 
 /** Fraction (0–1) of an item's stock projected to be wasted. */
 export const getWasteRiskRatio = (
-  item: Pick<InventoryItem, 'quantity' | 'daily_usage' | 'expiry_date'>
+  item: Pick<InventoryItem, 'quantity' | 'daily_usage' | 'observed_daily_usage' | 'expiry_date'>
 ): number => {
   const quantity = item.quantity ?? 0;
   if (quantity <= 0) return 0;
@@ -101,12 +136,15 @@ export const WASTE_RISK_THRESHOLD = 0.1;
 
 /** True when a meaningful share of this item is projected to be wasted. */
 export const isAtWasteRisk = (
-  item: Pick<InventoryItem, 'quantity' | 'daily_usage' | 'expiry_date'>
+  item: Pick<InventoryItem, 'quantity' | 'daily_usage' | 'observed_daily_usage' | 'expiry_date'>
 ): boolean => getWasteRiskRatio(item) > WASTE_RISK_THRESHOLD;
 
 /** Rupee value of the surplus, or 0 when no cost is recorded. */
 export const getWasteRiskValue = (
-  item: Pick<InventoryItem, 'quantity' | 'daily_usage' | 'expiry_date' | 'cost_per_unit'>
+  item: Pick<
+    InventoryItem,
+    'quantity' | 'daily_usage' | 'observed_daily_usage' | 'expiry_date' | 'cost_per_unit'
+  >
 ): number => getSurplusAtExpiry(item) * (item.cost_per_unit || 0);
 
 /**
@@ -138,7 +176,7 @@ export const BASELINE_LOW_STOCK_PROBABILITY = 0.05;
  * behaviour, preserved here rather than changed.
  */
 export const estimateLowStockProbability = (
-  item: Pick<InventoryItem, 'quantity' | 'daily_usage'>
+  item: Pick<InventoryItem, 'quantity' | 'daily_usage' | 'observed_daily_usage'>
 ): number => {
   const daysLeft = getDaysLeft(item);
   for (const band of LOW_STOCK_PROBABILITY_BANDS) {
