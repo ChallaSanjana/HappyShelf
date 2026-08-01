@@ -1,6 +1,6 @@
 import request from 'supertest';
 import { devUsers, clearDevPasswordResetTokens } from '../../src/store/devStore.js';
-import { devInventory } from '../../src/controllers/inventoryController.js';
+import { devInventory, devConsumptionHistory } from '../../src/controllers/inventoryController.js';
 import { resetRateLimiters } from '../../src/middleware/rateLimiter.js';
 import { clearDevAuditLog } from '../../src/utils/auditLog.js';
 
@@ -34,6 +34,7 @@ export async function getApp() {
 export function resetStores() {
   devUsers.clear();
   devInventory.clear();
+  devConsumptionHistory.clear();
   clearDevAuditLog();
   clearDevPasswordResetTokens();
   resetRateLimiters();
@@ -110,6 +111,35 @@ export async function createItem(token, overrides = {}) {
     throw new Error(`createItem failed: ${res.status} ${JSON.stringify(res.body)}`);
   }
   return res.body.item;
+}
+
+/**
+ * Seeds backdated consumption entries so the observed-usage rules have
+ * something to derive a rate from.
+ *
+ * Consuming through the API only ever timestamps "now", so a test can't build
+ * the multi-week history those rules require without writing to the store
+ * directly.
+ */
+export function seedConsumption(householdId, itemId, { days, quantity = 1, itemName = 'Rice' }) {
+  if (!devConsumptionHistory.has(householdId)) devConsumptionHistory.set(householdId, []);
+  const history = devConsumptionHistory.get(householdId);
+
+  for (let i = 0; i < days; i += 1) {
+    const at = new Date(Date.now() - i * 24 * 60 * 60 * 1000);
+    history.push({
+      id: `seed-${itemId}-${i}`,
+      householdId,
+      itemId,
+      itemName,
+      category: 'Grains',
+      quantityConsumed: quantity,
+      remainingQuantity: 0,
+      unit: 'kg',
+      consumedBy: 'Test Admin',
+      createdAt: at.toISOString(),
+    });
+  }
 }
 
 export { request };

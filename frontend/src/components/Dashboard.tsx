@@ -15,6 +15,7 @@ import { ReorderModal } from './ReorderModal';
 import { ConsumeModal } from './ConsumeModal';
 import { isExpiredOrExpiringSoon } from '../utils/expiry';
 import { getStockStatus, needsRestock, isAtWasteRisk } from '../utils/stock';
+import { getConsumedCO2 } from '../utils/sustainability';
 import { generateInventoryReportPdf } from '../utils/reportGenerator';
 import { parseImportFile } from '../utils/csvImport';
 import { useToast } from '../contexts/ToastContext';
@@ -513,14 +514,23 @@ export const Dashboard = () => {
   // replacing a "Recycling Rate" card that was really just the share of items
   // whose category name contained "produce"/"dairy"/etc. No recycling is
   // tracked anywhere in the app.
-  const unitsConsumedLast30Days = (() => {
+  const recentConsumption = (() => {
     const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1000;
-    return Math.round(
-      consumptionHistory
-        .filter((entry) => new Date(entry.createdAt).getTime() >= cutoff)
-        .reduce((sum, entry) => sum + (entry.quantityConsumed || 0), 0)
-    );
+    return consumptionHistory.filter((entry) => new Date(entry.createdAt).getTime() >= cutoff);
   })();
+
+  const unitsConsumedLast30Days = Math.round(
+    recentConsumption.reduce((sum, entry) => sum + (entry.quantityConsumed || 0), 0)
+  );
+
+  // Emissions avoided by using stock rather than binning it, priced with the
+  // per-category factors in utils/sustainability and the units the household
+  // actually logged consuming. This card previously showed stats.carbonReduced,
+  // which was 0.5 kg per "well managed" item — the same figure for a bottle of
+  // vinegar as for 10 kg of beef, and counted for stock merely sitting on the
+  // shelf. That number no longer exists; this one has a stated basis.
+  const co2AvoidedLast30Days =
+    Math.round(recentConsumption.reduce((sum, entry) => sum + getConsumedCO2(entry), 0) * 10) / 10;
 
   if (isLoading) {
     return (
@@ -612,11 +622,11 @@ export const Dashboard = () => {
                     prefix="₹"
                   />
                   <StatCard
-                    title="Carbon Reduced"
-                    value={stats?.carbonReduced || 0}
+                    title="CO₂ Avoided (30 days)"
+                    value={co2AvoidedLast30Days}
                     icon={<Leaf className="w-6 h-6" />}
                     color="green"
-                    suffix="kg CO₂"
+                    suffix="kg CO₂e"
                   />
                 </div>
 
@@ -689,7 +699,7 @@ export const Dashboard = () => {
                   <StatCard title="Total Items" value={stats?.totalItems || 0} icon={<Package className="w-6 h-6" />} color="green" />
                   <StatCard title="Critical Stock" value={stats?.lowStockItems || 0} icon={<AlertTriangle className="w-6 h-6" />} color="orange" />
                   <StatCard title="Protected Inventory Value" value={stats?.predictedSavings || 0} icon={<Download className="w-6 h-6" />} color="green" prefix="₹" />
-                  <StatCard title="Carbon Reduced" value={stats?.carbonReduced || 0} icon={<Leaf className="w-6 h-6" />} color="green" suffix="kg CO₂" />
+                  <StatCard title="CO₂ Avoided (30 days)" value={co2AvoidedLast30Days} icon={<Leaf className="w-6 h-6" />} color="green" suffix="kg CO₂e" />
                 </div>
               </div>
 
@@ -813,10 +823,19 @@ export const Dashboard = () => {
               )}
               <div className="mb-6">
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-4">
-                  <StatCard title="Waste Reduced" value={stats?.totalItems ? Math.max(0, Math.round((stats.totalItems - (stats.expiringSoon || 0)) * 0.1)) : 0} icon={<Leaf className="w-6 h-6" />} color="green" />
-                  <StatCard title="Eco Score" value={stats ? Math.max(0, Math.round(((stats.totalItems - (stats.expiringSoon || 0)) / Math.max(1, stats.totalItems)) * 100)) : 0} icon={<Leaf className="w-6 h-6" />} color="green" />
-                  <StatCard title="Expiries Prevented" value={stats?.expiringSoon || getExpiringSoonItems().length} icon={<AlertTriangle className="w-6 h-6" />} color="orange" />
+                  {/*
+                    These were "Waste Reduced" (totalItems minus expiring,
+                    times 0.1 — no unit and no basis), "Eco Score" (just the
+                    share of items not expiring, relabelled) and "Expiries
+                    Prevented", which showed stats.expiringSoon: the opposite
+                    of its label, a number that went *up* as the household did
+                    worse. All four tiles below come from recorded data or the
+                    shared metric rules.
+                  */}
+                  <StatCard title="CO₂ Avoided (30 days)" value={co2AvoidedLast30Days} icon={<Leaf className="w-6 h-6" />} color="green" suffix="kg CO₂e" />
                   <StatCard title="Used (30 days)" value={unitsConsumedLast30Days} icon={<Package className="w-6 h-6" />} color="blue" suffix=" units" />
+                  <StatCard title="Expiring Soon" value={stats?.expiringSoon ?? getExpiringSoonItems().length} icon={<AlertTriangle className="w-6 h-6" />} color="orange" />
+                  <StatCard title="Value At Risk" value={stats?.wasteRiskValue || 0} icon={<AlertTriangle className="w-6 h-6" />} color="orange" prefix="₹" />
                 </div>
               </div>
 

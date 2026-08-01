@@ -1,7 +1,14 @@
 import { test, describe, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { request, getApp, resetStores, registerAdmin, createItem } from './helpers/api.js';
+import {
+  request,
+  getApp,
+  resetStores,
+  registerAdmin,
+  createItem,
+  seedConsumption,
+} from './helpers/api.js';
 
 const isoDaysFromNow = (days) => {
   const date = new Date();
@@ -528,5 +535,90 @@ describe('stats endpoint', () => {
     assert.equal(res.body.lowStockItems, 1);
     assert.equal(res.body.outOfStockItems, 0);
     assert.equal(res.body.predictedSavings, 1000);
+  });
+});
+
+describe('observed daily usage', () => {
+  beforeEach(resetStores);
+
+  const get = async (token, path) => {
+    const app = await getApp();
+    return request(app).get(path).set('Authorization', `Bearer ${token}`).expect(200);
+  };
+
+  test('items come back with the rate the household is actually observed to use', async () => {
+    const { token, user } = await registerAdmin();
+    // Typed 1/day, but 3 units a day actually consumed for a fortnight.
+    const item = await createItem(token, { name: 'Rice', quantity: 30, daily_usage: 1 });
+    seedConsumption(user.householdId, item.id, { days: 14, quantity: 3 });
+
+    const res = await get(token, '/api/inventory/items');
+    assert.equal(res.body.items[0].observed_daily_usage, 3);
+  });
+
+  test('too little history leaves the typed rate alone', async () => {
+    const { token, user } = await registerAdmin();
+    const item = await createItem(token, { name: 'Rice', quantity: 30, daily_usage: 1 });
+    seedConsumption(user.householdId, item.id, { days: 3, quantity: 3 });
+
+    const res = await get(token, '/api/inventory/items');
+    assert.equal(res.body.items[0].observed_daily_usage, undefined);
+    assert.equal(res.body.items[0].daily_usage, 1);
+  });
+
+  test('stats count an item as low when the observed rate says so', async () => {
+    const { token, user } = await registerAdmin();
+    // 30 units at the typed 1/day is a month of runway and looks healthy; at
+    // the 15/day the household actually gets through, it is two days.
+    const item = await createItem(token, { name: 'Rice', quantity: 30, daily_usage: 1 });
+
+    const before = await get(token, '/api/inventory/stats');
+    assert.equal(before.body.lowStockItems, 0);
+
+    seedConsumption(user.householdId, item.id, { days: 10, quantity: 15 });
+
+    const after = await get(token, '/api/inventory/stats');
+    assert.equal(after.body.lowStockItems, 1);
+  });
+
+  test('the stock filter agrees with the stats', async () => {
+    const { token, user } = await registerAdmin();
+    const item = await createItem(token, { name: 'Rice', quantity: 30, daily_usage: 1 });
+    seedConsumption(user.householdId, item.id, { days: 10, quantity: 15 });
+
+    const res = await get(token, '/api/inventory/items?stockStatus=low');
+    assert.equal(res.body.total, 1);
+    assert.equal(res.body.items[0].name, 'Rice');
+  });
+
+  test('an action plan is built from the observed rate too', async () => {
+    const app = await getApp();
+    const { token, user } = await registerAdmin();
+    const item = await createItem(token, { name: 'Rice', quantity: 30, daily_usage: 1 });
+    seedConsumption(user.householdId, item.id, { days: 10, quantity: 15 });
+
+    const res = await request(app)
+      .post('/api/action-plans')
+      .set('Authorization', `Bearer ${token}`)
+      .send({})
+      .expect(201);
+
+    const tasks = res.body.plan.tasks;
+    assert.equal(tasks.length, 1);
+    assert.equal(tasks[0].type, 'restock');
+    assert.equal(tasks[0].itemName, 'Rice');
+  });
+
+  test('one household\'s consumption never affects another\'s', async () => {
+    const first = await registerAdmin();
+    const second = await registerAdmin();
+    const item = await createItem(first.token, { name: 'Rice', quantity: 30, daily_usage: 1 });
+    await createItem(second.token, { name: 'Rice', quantity: 30, daily_usage: 1 });
+    seedConsumption(first.user.householdId, item.id, { days: 10, quantity: 15 });
+
+    const mine = await get(first.token, '/api/inventory/stats');
+    const theirs = await get(second.token, '/api/inventory/stats');
+    assert.equal(mine.body.lowStockItems, 1);
+    assert.equal(theirs.body.lowStockItems, 0);
   });
 });

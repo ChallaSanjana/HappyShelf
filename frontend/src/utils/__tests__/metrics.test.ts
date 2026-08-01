@@ -3,6 +3,7 @@ import { describe, test, expect } from 'vitest';
 import {
   getStockStatus,
   getDaysLeft,
+  getEffectiveDailyUsage,
   needsRestock,
   estimateLowStockProbability,
   getSurplusAtExpiry,
@@ -150,8 +151,33 @@ describe('waste risk — edge cases', () => {
     expect(isAtWasteRisk(item)).toBe(false);
   });
 
-  test('nothing consumed means all of it is at risk', () => {
-    expect(getSurplusAtExpiry(makeItem({ quantity: 40, daily_usage: 0, expiry_date: daysFromNow(3) }))).toBe(40);
+  test('no usage rate makes no claim, rather than flagging everything', () => {
+    // Previously this returned the whole quantity — the strongest possible
+    // warning from the least possible information. Not reachable via the API
+    // (itemValidation requires daily_usage > 0), but the schema allows 0 and
+    // defaults to it, so imported and migrated rows still land here.
+    const item = makeItem({ quantity: 40, daily_usage: 0, expiry_date: daysFromNow(3) });
+    expect(getSurplusAtExpiry(item)).toBe(0);
+    expect(isAtWasteRisk(item)).toBe(false);
+  });
+
+  test('but an item already past its date is still waste, rate or no rate', () => {
+    const item = makeItem({ quantity: 40, daily_usage: 0, expiry_date: daysFromNow(-1) });
+    expect(getSurplusAtExpiry(item)).toBe(40);
+    expect(isAtWasteRisk(item)).toBe(true);
+  });
+
+  test('an observed rate is preferred over the typed one', () => {
+    // Typed 10/day would consume all 40 within the 4 days remaining and look
+    // fine; the household is actually observed to use 1/day, leaving 36.
+    const item = makeItem({
+      quantity: 40,
+      daily_usage: 10,
+      observed_daily_usage: 1,
+      expiry_date: daysFromNow(4),
+    });
+    expect(getSurplusAtExpiry(item)).toBe(36);
+    expect(isAtWasteRisk(item)).toBe(true);
   });
 
   test('already expired means none of it gets used', () => {
@@ -170,8 +196,9 @@ describe('waste risk — edge cases', () => {
   });
 
   test('value is the surplus priced at cost, 0 without one', () => {
-    expect(getWasteRiskValue(makeItem({ quantity: 40, daily_usage: 0, expiry_date: daysFromNow(3), cost_per_unit: 25 }))).toBe(1000);
-    expect(getWasteRiskValue(makeItem({ quantity: 40, daily_usage: 0, expiry_date: daysFromNow(3), cost_per_unit: null }))).toBe(0);
+    // Already expired, so the whole quantity is surplus regardless of rate.
+    expect(getWasteRiskValue(makeItem({ quantity: 40, daily_usage: 0, expiry_date: daysFromNow(-1), cost_per_unit: 25 }))).toBe(1000);
+    expect(getWasteRiskValue(makeItem({ quantity: 40, daily_usage: 0, expiry_date: daysFromNow(-1), cost_per_unit: null }))).toBe(0);
   });
 
   test('does not change stock or expiry status', () => {
@@ -188,6 +215,31 @@ describe('getDaysLeft', () => {
 
   test('divides quantity by usage', () => {
     expect(getDaysLeft(makeItem({ quantity: 10, daily_usage: 2 }))).toBe(5);
+  });
+
+  test('divides by the observed rate when the server supplied one', () => {
+    // The typed 2/day says 5 days left; the household is observed to get
+    // through 5/day, so they actually have 2.
+    const item = makeItem({ quantity: 10, daily_usage: 2, observed_daily_usage: 5 });
+    expect(getDaysLeft(item)).toBe(2);
+    expect(getStockStatus(item)).toBe('low');
+  });
+});
+
+describe('getEffectiveDailyUsage', () => {
+  test('prefers the observed rate', () => {
+    expect(getEffectiveDailyUsage(makeItem({ daily_usage: 2, observed_daily_usage: 5 }))).toBe(5);
+  });
+
+  test('falls back to the typed rate when there is no observation', () => {
+    expect(getEffectiveDailyUsage(makeItem({ daily_usage: 2 }))).toBe(2);
+  });
+
+  test('ignores an unusable observation rather than trusting it', () => {
+    // A zero or negative rate would silently turn days-left into Infinity.
+    expect(getEffectiveDailyUsage(makeItem({ daily_usage: 2, observed_daily_usage: 0 }))).toBe(2);
+    expect(getEffectiveDailyUsage(makeItem({ daily_usage: 2, observed_daily_usage: -1 }))).toBe(2);
+    expect(getEffectiveDailyUsage(makeItem({ daily_usage: 2, observed_daily_usage: NaN }))).toBe(2);
   });
 });
 
@@ -258,7 +310,12 @@ describe('calculateMetrics — shared contract with the backend', () => {
   test('a low-stock item with no expiry date is not counted as well managed', () => {
     const wellManaged = getWellManagedItems(fixtureItems).map((i) => i.id);
     expect(wellManaged).not.toContain('low-by-min-stock');
-    expect(wellManaged.sort()).toEqual(['healthy-1', 'healthy-no-expiry', 'no-cost-recorded']);
+    expect(wellManaged.sort()).toEqual([
+      'dated-but-untracked',
+      'healthy-1',
+      'healthy-no-expiry',
+      'no-cost-recorded',
+    ]);
   });
 
   test('items without a recorded cost contribute nothing to savings', () => {
@@ -278,7 +335,6 @@ describe('calculateMetrics — shared contract with the backend', () => {
       wasteRiskValue: 0,
       categoryCounts: {},
       predictedSavings: 0,
-      carbonReduced: 0,
     });
   });
 });
