@@ -7,6 +7,7 @@ import authRoutes from './routes/authRoutes.js';
 import inventoryRoutes from './routes/inventoryRoutes.js';
 import teamRoutes from './routes/teamRoutes.js';
 import actionPlanRoutes from './routes/actionPlanRoutes.js';
+import auditLogRoutes from './routes/auditLogRoutes.js';
 import { apiLimiter } from './middleware/rateLimiter.js';
 
 dotenv.config();
@@ -73,6 +74,7 @@ app.use('/api/auth', authRoutes);
 app.use('/api/inventory', inventoryRoutes);
 app.use('/api/team', teamRoutes);
 app.use('/api/action-plans', actionPlanRoutes);
+app.use('/api/audit-log', auditLogRoutes);
 
 // 404 for unmatched routes
 app.use((req, res) => {

@@ -8,6 +8,7 @@ import {
   Leaf,
   Users,
   Settings,
+  ScrollText,
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { View, DEFAULT_VIEW } from '../hooks/useHashRoute';
@@ -44,6 +45,7 @@ const items: MenuItemType[] = [
   { key: 'alerts', label: 'Alerts', icon: <Bell className="w-5 h-5" />, category: 'Main' },
   { key: 'sustainability', label: 'Sustainability', icon: <Leaf className="w-5 h-5" />, category: 'Insights' },
   { key: 'team', label: 'Team', icon: <Users className="w-5 h-5" />, category: 'Admin' },
+  { key: 'auditLog', label: 'Audit Log', icon: <ScrollText className="w-5 h-5" />, category: 'Admin' },
   { key: 'settings', label: 'Settings', icon: <Settings className="w-5 h-5" />, category: 'Admin' },
 ];
 
@@ -71,7 +73,7 @@ export const Sidebar: React.FC<Props> = ({ mobileOpen = false, onClose, onNaviga
 
   const filteredItems = React.useMemo(() => {
     return items.filter(it => {
-      if (it.key === 'settings') {
+      if (it.key === 'settings' || it.key === 'auditLog') {
         return role === 'Admin';
       }
       if (it.key === 'team') {

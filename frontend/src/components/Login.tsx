@@ -4,6 +4,7 @@ import { LogIn, Leaf, Eye, EyeOff } from 'lucide-react';
 
 interface LoginProps {
   onToggle: () => void;
+  onForgotPassword: () => void;
   /**
    * Explanation shown when the user landed here because their session
    * ended on its own — expired, revoked by a role change, or the account
@@ -12,7 +13,7 @@ interface LoginProps {
   notice?: string | null;
 }
 
-export const Login = ({ onToggle, notice }: LoginProps) => {
+export const Login = ({ onToggle, onForgotPassword, notice }: LoginProps) => {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
@@ -116,6 +117,16 @@ export const Login = ({ onToggle, notice }: LoginProps) => {
             <LogIn className="w-5 h-5" />
             {isLoading ? 'Signing in...' : 'Sign In'}
           </button>
+
+          <div className="text-center">
+            <button
+              type="button"
+              onClick={onForgotPassword}
+              className="text-sm text-gray-500 hover:text-gray-700"
+            >
+              Forgot your password?
+            </button>
+          </div>
         </form>
 
         <div className="mt-6 text-center">

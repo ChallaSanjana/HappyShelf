@@ -16,6 +16,7 @@ import {
 import { validateNewItem, parseNumericFields, VALID_UNITS } from '../utils/itemValidation.js';
 import { buildDevHistoryBase } from '../utils/historyJson.js';
 import { sendStockAlert } from '../utils/mailer.js';
+import { recordAudit, AUDIT_ACTIONS } from '../utils/auditLog.js';
 
 // In-memory storage fallback for development when MongoDB is unavailable.
 // Exported so other controllers (actionPlanController) that need to read
@@ -169,12 +170,24 @@ export const createItem = async (req, res) => {
       const newItem = buildDevItem(req.user.householdId, value);
       items.push(newItem);
       console.log(`✓ Item created (in-memory): ${value.name}`);
+      await recordAudit({
+        householdId: req.user.householdId, actor: req.user,
+        action: AUDIT_ACTIONS.ITEM_CREATED, targetType: 'item',
+        targetId: newItem.id, targetName: value.name,
+        details: { quantity: value.quantity, unit: value.unit },
+      });
       await notifyIfStockStatusWorsened(req.user.householdId, null, newItem);
       return res.status(201).json({ message: 'Item created successfully (dev mode)', item: newItem });
     }
 
     const newItem = await Item.create({ household_id: req.user.householdId, ...value });
 
+    await recordAudit({
+      householdId: req.user.householdId, actor: req.user,
+      action: AUDIT_ACTIONS.ITEM_CREATED, targetType: 'item',
+      targetId: newItem._id.toString(), targetName: value.name,
+      details: { quantity: value.quantity, unit: value.unit },
+    });
     await notifyIfStockStatusWorsened(req.user.householdId, null, newItem);
 
     res.status(201).json({ message: 'Item created successfully', item: newItem });
@@ -237,6 +250,11 @@ export const bulkCreateItems = async (req, res) => {
       const items = getUserItems(req.user.householdId);
       const created = validated.map((value) => buildDevItem(req.user.householdId, value));
       items.push(...created);
+      await recordAudit({
+        householdId: req.user.householdId, actor: req.user,
+        action: AUDIT_ACTIONS.ITEMS_IMPORTED, targetType: 'household',
+        details: { created: created.length, skipped: errors.length },
+      });
       return res.status(201).json({
         message: `Imported ${created.length} item${created.length === 1 ? '' : 's'} (dev mode)`,
         created: created.length,
@@ -247,6 +265,12 @@ export const bulkCreateItems = async (req, res) => {
 
     const docs = validated.map((value) => ({ household_id: req.user.householdId, ...value }));
     const created = await Item.insertMany(docs, { ordered: false });
+
+    await recordAudit({
+      householdId: req.user.householdId, actor: req.user,
+      action: AUDIT_ACTIONS.ITEMS_IMPORTED, targetType: 'household',
+      details: { created: created.length, skipped: errors.length },
+    });
 
     res.status(201).json({
       message: `Imported ${created.length} item${created.length === 1 ? '' : 's'}`,
@@ -420,6 +444,12 @@ export const updateItem = async (req, res) => {
       if (storage_location !== undefined) item.storage_location = storage_location || null;
       if (cost_per_unit !== undefined) item.cost_per_unit = costPerUnit;
       item.updated_at = new Date().toISOString();
+      await recordAudit({
+        householdId: req.user.householdId, actor: req.user,
+        action: AUDIT_ACTIONS.ITEM_UPDATED, targetType: 'item',
+        targetId: item.id, targetName: item.name,
+        details: { fields: Object.keys(req.body || {}) },
+      });
       await notifyIfStockStatusWorsened(req.user.householdId, beforeSnapshot, item);
       return res.json({ message: 'Item updated successfully (dev mode)', item });
     }
@@ -456,6 +486,12 @@ export const updateItem = async (req, res) => {
       return res.status(404).json({ error: 'Item not found' });
     }
 
+    await recordAudit({
+      householdId: req.user.householdId, actor: req.user,
+      action: AUDIT_ACTIONS.ITEM_UPDATED, targetType: 'item',
+      targetId: updatedItem._id.toString(), targetName: updatedItem.name,
+      details: { fields: Object.keys(req.body || {}) },
+    });
     await notifyIfStockStatusWorsened(req.user.householdId, beforeItemForAlert, updatedItem);
 
     res.json({ message: 'Item updated successfully', item: updatedItem });
@@ -531,6 +567,13 @@ export const reorderItem = async (req, res) => {
       };
       getHouseholdHistory(req.user.householdId).unshift(historyEntry);
 
+      await recordAudit({
+        householdId: req.user.householdId, actor: req.user,
+        action: AUDIT_ACTIONS.ITEM_REORDERED, targetType: 'item',
+        targetId: item.id, targetName: item.name,
+        details: { quantityAdded: reorderQty, newQuantity: item.quantity, unit: item.unit },
+      });
+
       return res.json({
         message: 'Item reordered successfully (dev mode)',
         item,
@@ -575,6 +618,13 @@ export const reorderItem = async (req, res) => {
       new_quantity: updatedItem.quantity,
       unit: updatedItem.unit,
       reordered_by: req.user.userId,
+    });
+
+    await recordAudit({
+      householdId: req.user.householdId, actor: req.user,
+      action: AUDIT_ACTIONS.ITEM_REORDERED, targetType: 'item',
+      targetId: updatedItem._id.toString(), targetName: updatedItem.name,
+      details: { quantityAdded: reorderQty, newQuantity: updatedItem.quantity, unit: updatedItem.unit },
     });
 
     res.json({
@@ -631,6 +681,12 @@ export const consumeItem = async (req, res) => {
       };
       getHouseholdConsumptionHistory(req.user.householdId).unshift(historyEntry);
 
+      await recordAudit({
+        householdId: req.user.householdId, actor: req.user,
+        action: AUDIT_ACTIONS.ITEM_CONSUMED, targetType: 'item',
+        targetId: item.id, targetName: item.name,
+        details: { quantityConsumed: consumeQty, remainingQuantity: item.quantity, unit: item.unit },
+      });
       await notifyIfStockStatusWorsened(req.user.householdId, beforeSnapshot, item);
 
       return res.json({
@@ -681,6 +737,12 @@ export const consumeItem = async (req, res) => {
       daily_usage: updatedItem.daily_usage,
       min_stock_level: updatedItem.min_stock_level,
     };
+    await recordAudit({
+      householdId: req.user.householdId, actor: req.user,
+      action: AUDIT_ACTIONS.ITEM_CONSUMED, targetType: 'item',
+      targetId: updatedItem._id.toString(), targetName: updatedItem.name,
+      details: { quantityConsumed: consumeQty, remainingQuantity: updatedItem.quantity, unit: updatedItem.unit },
+    });
     await notifyIfStockStatusWorsened(req.user.householdId, beforeSnapshot, updatedItem);
 
     res.json({
@@ -787,7 +849,13 @@ export const deleteItem = async (req, res) => {
       if (index === -1) {
         return res.status(404).json({ error: 'Item not found' });
       }
-      items.splice(index, 1);
+      const [removed] = items.splice(index, 1);
+      await recordAudit({
+        householdId: req.user.householdId, actor: req.user,
+        action: AUDIT_ACTIONS.ITEM_DELETED, targetType: 'item',
+        targetId: id, targetName: removed?.name ?? null,
+        details: { quantity: removed?.quantity, unit: removed?.unit },
+      });
       return res.json({ message: 'Item deleted successfully (dev mode)' });
     }
 
@@ -799,6 +867,13 @@ export const deleteItem = async (req, res) => {
     if (!deletedItem) {
       return res.status(404).json({ error: 'Item not found' });
     }
+
+    await recordAudit({
+      householdId: req.user.householdId, actor: req.user,
+      action: AUDIT_ACTIONS.ITEM_DELETED, targetType: 'item',
+      targetId: deletedItem._id.toString(), targetName: deletedItem.name,
+      details: { quantity: deletedItem.quantity, unit: deletedItem.unit },
+    });
 
     res.json({ message: 'Item deleted successfully' });
   } catch (error) {

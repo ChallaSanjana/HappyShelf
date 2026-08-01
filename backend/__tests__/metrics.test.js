@@ -11,6 +11,11 @@ import {
   getWellManagedItems,
   estimateLowStockProbability,
   calculateRefillDate,
+  getSurplusAtExpiry,
+  getWasteRiskRatio,
+  isAtWasteRisk,
+  getWasteRiskValue,
+  WASTE_RISK_THRESHOLD,
   MAX_REFILL_HORIZON_DAYS,
   NO_REFILL_DATE,
   LOW_STOCK_DAYS,
@@ -24,10 +29,17 @@ import {
   expectedStockStatus,
   expectedExpiryStatus,
   expectedLowStockProbability,
+  expectedAtWasteRisk,
   expectedStats,
 } from './helpers/fixtures.js';
 
 const byId = (id) => fixtureItems.find((item) => item.id === id);
+
+const daysFromNow = (days) => {
+  const d = new Date();
+  d.setDate(d.getDate() + days);
+  return d.toISOString();
+};
 
 describe('getStockStatus', () => {
   for (const [id, expected] of Object.entries(expectedStockStatus)) {
@@ -157,6 +169,65 @@ describe('calculateRefillDate', () => {
   });
 });
 
+describe('waste risk (overstock relative to shelf life)', () => {
+  for (const [id, expected] of Object.entries(expectedAtWasteRisk)) {
+    test(`${id} -> ${expected ? 'at risk' : 'safe'}`, () => {
+      assert.equal(isAtWasteRisk(byId(id)), expected);
+    });
+  }
+
+  test('surplus is what cannot be consumed before the date', () => {
+    // 100 units, 2/day, 10 days left -> 20 consumable, 80 surplus.
+    const item = { quantity: 100, daily_usage: 2, expiry_date: daysFromNow(10) };
+    assert.equal(Math.round(getSurplusAtExpiry(item)), 80);
+    assert.equal(Math.round(getWasteRiskRatio(item) * 100), 80);
+  });
+
+  test('an item that will be finished in time has no surplus', () => {
+    assert.equal(getSurplusAtExpiry({ quantity: 5, daily_usage: 2, expiry_date: daysFromNow(10) }), 0);
+    assert.equal(isAtWasteRisk({ quantity: 5, daily_usage: 2, expiry_date: daysFromNow(10) }), false);
+  });
+
+  test('no expiry date means the question does not apply', () => {
+    assert.equal(getSurplusAtExpiry({ quantity: 1000, daily_usage: 0, expiry_date: null }), 0);
+    assert.equal(isAtWasteRisk({ quantity: 1000, daily_usage: 0, expiry_date: null }), false);
+  });
+
+  test('nothing consumed means all of it is at risk', () => {
+    assert.equal(getSurplusAtExpiry({ quantity: 40, daily_usage: 0, expiry_date: daysFromNow(3) }), 40);
+  });
+
+  test('already expired means none of it gets used', () => {
+    assert.equal(getSurplusAtExpiry({ quantity: 12, daily_usage: 5, expiry_date: daysFromNow(-2) }), 12);
+  });
+
+  test('zero quantity has nothing to waste', () => {
+    assert.equal(getSurplusAtExpiry({ quantity: 0, daily_usage: 1, expiry_date: daysFromNow(1) }), 0);
+    assert.equal(getWasteRiskRatio({ quantity: 0, daily_usage: 1, expiry_date: daysFromNow(1) }), 0);
+  });
+
+  test(`exactly at the ${WASTE_RISK_THRESHOLD} threshold is not flagged`, () => {
+    // 100 units, 1/day, 90 days -> 10 surplus -> exactly 0.10, and the
+    // comparison is strictly greater-than, so this stays safe.
+    assert.equal(isAtWasteRisk(byId('healthy-1')), false);
+    assert.equal(Math.round(getWasteRiskRatio(byId('healthy-1')) * 100) / 100, WASTE_RISK_THRESHOLD);
+  });
+
+  test('value is the surplus priced at cost, 0 without one', () => {
+    assert.equal(getWasteRiskValue({ quantity: 40, daily_usage: 0, expiry_date: daysFromNow(3), cost_per_unit: 25 }), 1000);
+    assert.equal(getWasteRiskValue({ quantity: 40, daily_usage: 0, expiry_date: daysFromNow(3), cost_per_unit: null }), 0);
+  });
+
+  test('does not change stock or expiry status', () => {
+    // The overstocked item is healthy on stock and merely expiring soon on
+    // date; waste risk is an additional axis, not a redefinition.
+    const item = byId('overstocked-perishable');
+    assert.equal(getStockStatus(item), 'healthy');
+    assert.equal(getExpiryStatus(item), 'expiring_soon');
+    assert.equal(isAtWasteRisk(item), true);
+  });
+});
+
 describe('getDaysLeft', () => {
   test('is Infinity when nothing is consumed', () => {
     assert.equal(getDaysLeft({ quantity: 10, daily_usage: 0 }), Infinity);
@@ -214,12 +285,19 @@ describe('calculateStats', () => {
   });
 
   test('lowStockItems counts both low and out-of-stock', () => {
-    assert.equal(stats.lowStockItems, 3);
-    assert.equal(stats.outOfStockItems, 1);
+    // Derived from the shared fixtures rather than hardcoded, so adding a
+    // fixture case doesn't silently invalidate the assertion.
+    assert.equal(stats.lowStockItems, expectedStats.lowStockItems);
+    assert.equal(stats.outOfStockItems, expectedStats.outOfStockItems);
   });
 
   test('expiringSoon includes already-expired stock', () => {
-    assert.equal(stats.expiringSoon, 2);
+    assert.equal(stats.expiringSoon, expectedStats.expiringSoon);
+  });
+
+  test('waste risk is reported alongside, not instead of, the other counts', () => {
+    assert.equal(stats.wasteRiskItems, expectedStats.wasteRiskItems);
+    assert.equal(stats.wasteRiskValue, expectedStats.wasteRiskValue);
   });
 
   test('items without a recorded cost contribute nothing to savings', () => {
@@ -244,6 +322,8 @@ describe('calculateStats', () => {
       lowStockItems: 0,
       outOfStockItems: 0,
       expiringSoon: 0,
+      wasteRiskItems: 0,
+      wasteRiskValue: 0,
       categoryCounts: {},
       predictedSavings: 0,
       carbonReduced: 0,

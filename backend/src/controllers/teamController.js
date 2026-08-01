@@ -2,6 +2,7 @@ import mongoose from 'mongoose';
 import bcrypt from 'bcrypt';
 import User from '../models/User.js';
 import { devUsers, findDevUserById } from '../store/devStore.js';
+import { recordAudit, AUDIT_ACTIONS } from '../utils/auditLog.js';
 
 function isDbConnected() {
   return mongoose.connection.readyState === 1;
@@ -76,6 +77,40 @@ function shouldRevokeSessions(member, { role, isActive, password }) {
   return false;
 }
 
+/**
+ * Emits one entry per meaningful change in a member update.
+ *
+ * A single PUT can change several things at once, and "role changed" and
+ * "deactivated" are separately interesting when reading the log back, so
+ * they are recorded as separate entries rather than one lumped "updated".
+ * `before` is captured prior to mutation.
+ */
+async function recordMemberChanges({ householdId, actor, member, before, role, isActive, password }) {
+  const target = { targetType: 'member', targetId: String(member.id ?? member._id), targetName: before.name };
+
+  if (role !== undefined && role !== before.role) {
+    await recordAudit({
+      householdId, actor, action: AUDIT_ACTIONS.MEMBER_ROLE_CHANGED, ...target,
+      details: { from: before.role, to: role },
+    });
+  }
+
+  if (isActive !== undefined && isActive !== before.isActive) {
+    await recordAudit({
+      householdId, actor,
+      action: isActive ? AUDIT_ACTIONS.MEMBER_REACTIVATED : AUDIT_ACTIONS.MEMBER_DEACTIVATED,
+      ...target, details: {},
+    });
+  }
+
+  if (password !== undefined) {
+    // The new password is never recorded, only the fact that it changed.
+    await recordAudit({
+      householdId, actor, action: AUDIT_ACTIONS.MEMBER_PASSWORD_RESET, ...target, details: {},
+    });
+  }
+}
+
 export const getTeamMembers = async (req, res) => {
   try {
     const householdId = req.user.householdId;
@@ -143,6 +178,12 @@ export const createTeamMember = async (req, res) => {
       };
       devUsers.set(normalizedEmail, newMember);
 
+      await recordAudit({
+        householdId, actor: req.user, action: AUDIT_ACTIONS.MEMBER_ADDED,
+        targetType: 'member', targetId: userId, targetName: name,
+        details: { email: normalizedEmail, role },
+      });
+
       return res.status(201).json({
         message: 'Team member added successfully (dev mode)',
         member: {
@@ -170,6 +211,12 @@ export const createTeamMember = async (req, res) => {
       password_hash: passwordHash,
       role,
       household_id: householdId,
+    });
+
+    await recordAudit({
+      householdId, actor: req.user, action: AUDIT_ACTIONS.MEMBER_ADDED,
+      targetType: 'member', targetId: newMember._id.toString(), targetName: name,
+      details: { email: normalizedEmail, role },
     });
 
     res.status(201).json({
@@ -280,6 +327,7 @@ export const updateTeamMember = async (req, res) => {
       }
 
       const devRevoke = shouldRevokeSessions(member, { role, isActive, password });
+      const devBefore = { name: member.name, role: member.role, isActive: member.is_active !== false };
 
       if (name !== undefined) member.name = name;
       if (avatarUrl !== undefined) member.avatar_url = avatarUrl || null;
@@ -287,6 +335,10 @@ export const updateTeamMember = async (req, res) => {
       if (role !== undefined) member.role = role;
       if (isActive !== undefined) member.is_active = isActive;
       if (devRevoke) member.token_version = (member.token_version || 0) + 1;
+
+      await recordMemberChanges({
+        householdId, actor: req.user, member, before: devBefore, role, isActive, password,
+      });
 
       return res.json({
         message: 'Team member updated successfully (dev mode)',
@@ -344,6 +396,7 @@ export const updateTeamMember = async (req, res) => {
     }
 
     const revokeSessions = shouldRevokeSessions(member, { role, isActive, password });
+    const before = { name: member.name, role: member.role, isActive: member.is_active !== false };
 
     if (name !== undefined) member.name = name;
     if (avatarUrl !== undefined) member.avatar_url = avatarUrl || null;
@@ -353,6 +406,10 @@ export const updateTeamMember = async (req, res) => {
     if (revokeSessions) member.token_version = (member.token_version || 0) + 1;
 
     await member.save();
+
+    await recordMemberChanges({
+      householdId, actor: req.user, member, before, role, isActive, password,
+    });
 
     res.json({
       message: 'Team member updated successfully',
@@ -401,6 +458,13 @@ export const deleteTeamMember = async (req, res) => {
       }
 
       devUsers.delete(member.email);
+
+      await recordAudit({
+        householdId, actor: req.user, action: AUDIT_ACTIONS.MEMBER_REMOVED,
+        targetType: 'member', targetId: member.id, targetName: member.name,
+        details: { email: member.email, role: member.role },
+      });
+
       return res.json({ message: 'Team member removed successfully (dev mode)' });
     }
 
@@ -426,6 +490,12 @@ export const deleteTeamMember = async (req, res) => {
     if (result.deletedCount === 0) {
       return res.status(404).json({ error: 'Team member not found' });
     }
+
+    await recordAudit({
+      householdId, actor: req.user, action: AUDIT_ACTIONS.MEMBER_REMOVED,
+      targetType: 'member', targetId: memberId, targetName: member.name,
+      details: { email: member.email, role: member.role },
+    });
 
     res.json({ message: 'Team member removed successfully' });
   } catch (error) {

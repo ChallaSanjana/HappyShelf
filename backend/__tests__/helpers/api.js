@@ -1,7 +1,8 @@
 import request from 'supertest';
-import { devUsers } from '../../src/store/devStore.js';
+import { devUsers, clearDevPasswordResetTokens } from '../../src/store/devStore.js';
 import { devInventory } from '../../src/controllers/inventoryController.js';
 import { resetRateLimiters } from '../../src/middleware/rateLimiter.js';
+import { clearDevAuditLog } from '../../src/utils/auditLog.js';
 
 /**
  * Test harness for the HTTP API.
@@ -33,6 +34,8 @@ export async function getApp() {
 export function resetStores() {
   devUsers.clear();
   devInventory.clear();
+  clearDevAuditLog();
+  clearDevPasswordResetTokens();
   resetRateLimiters();
 }
 

@@ -1,12 +1,20 @@
 import { InventoryItem } from '../services/api';
 import { isExpiredOrExpiringSoon } from './expiry';
-import { getStockStatus, needsRestock, CARBON_PER_WELL_MANAGED_ITEM } from './stock';
+import {
+  getStockStatus,
+  needsRestock,
+  isAtWasteRisk,
+  getWasteRiskValue,
+  CARBON_PER_WELL_MANAGED_ITEM,
+} from './stock';
 
 export interface CalculatedMetrics {
   totalItems: number;
   lowStockItems: number;
   outOfStockItems: number;
   expiringSoon: number;
+  wasteRiskItems: number;
+  wasteRiskValue: number;
   categoryCounts: Record<string, number>;
   predictedSavings: number;
   carbonReduced: number;
@@ -39,6 +47,8 @@ export const calculateMetrics = (items: InventoryItem[]): CalculatedMetrics => {
       lowStockItems: 0,
       outOfStockItems: 0,
       expiringSoon: 0,
+      wasteRiskItems: 0,
+      wasteRiskValue: 0,
       categoryCounts: {},
       predictedSavings: 0,
       carbonReduced: 0,
@@ -48,6 +58,12 @@ export const calculateMetrics = (items: InventoryItem[]): CalculatedMetrics => {
   const lowStockItems = list.filter(needsRestock).length;
   const outOfStockItems = list.filter((item) => getStockStatus(item) === 'out').length;
   const expiringSoon = list.filter((item) => isExpiredOrExpiringSoon(item.expiry_date)).length;
+
+  // Overstock relative to shelf life — a separate axis from stock and expiry
+  // status, matching calculateStats on the backend.
+  const atRisk = list.filter(isAtWasteRisk);
+  const wasteRiskItems = atRisk.length;
+  const wasteRiskValue = Math.round(atRisk.reduce((sum, item) => sum + getWasteRiskValue(item), 0));
 
   const categoryCounts = list.reduce((acc, item) => {
     acc[item.category] = (acc[item.category] || 0) + 1;
@@ -70,6 +86,8 @@ export const calculateMetrics = (items: InventoryItem[]): CalculatedMetrics => {
     lowStockItems,
     outOfStockItems,
     expiringSoon,
+    wasteRiskItems,
+    wasteRiskValue,
     categoryCounts,
     predictedSavings,
     carbonReduced,

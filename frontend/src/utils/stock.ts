@@ -1,4 +1,5 @@
 import { InventoryItem } from '../services/api';
+import { getDaysToExpiry } from './expiry';
 
 /**
  * Client-side mirror of backend/src/utils/inventoryMetrics.js.
@@ -52,6 +53,61 @@ export const getStockStatus = (
 export const needsRestock = (
   item: Pick<InventoryItem, 'quantity' | 'daily_usage' | 'min_stock_level'>
 ): boolean => getStockStatus(item) !== 'healthy';
+
+/**
+ * Surplus that will not be consumed before it expires.
+ *
+ * A separate axis from stock status and expiry status, not a change to
+ * either. An item can be "healthy" on stock and merely "expiring soon" on
+ * date while most of it is still headed for the bin.
+ *
+ * Client mirror of getSurplusAtExpiry in backend/src/utils/inventoryMetrics.js;
+ * the shared fixtures run both.
+ */
+export const getSurplusAtExpiry = (
+  item: Pick<InventoryItem, 'quantity' | 'daily_usage' | 'expiry_date'>
+): number => {
+  const days = getDaysToExpiry(item.expiry_date);
+  if (days === null) return 0;
+
+  const quantity = item.quantity ?? 0;
+  if (quantity <= 0) return 0;
+
+  const dailyUsage = item.daily_usage ?? 0;
+  // Nothing is being consumed, so none of it gets used before it expires.
+  if (dailyUsage <= 0) return quantity;
+
+  // Already past its date: none of the remaining stock gets used.
+  if (days <= 0) return quantity;
+
+  return Math.max(0, quantity - dailyUsage * days);
+};
+
+/** Fraction (0–1) of an item's stock projected to be wasted. */
+export const getWasteRiskRatio = (
+  item: Pick<InventoryItem, 'quantity' | 'daily_usage' | 'expiry_date'>
+): number => {
+  const quantity = item.quantity ?? 0;
+  if (quantity <= 0) return 0;
+  return getSurplusAtExpiry(item) / quantity;
+};
+
+/**
+ * Share of an item's stock that must be surplus before it is worth warning
+ * about. Below this the projection is too close to call — usage rates are
+ * estimates, and flagging a 2% overshoot would make the warning noise.
+ */
+export const WASTE_RISK_THRESHOLD = 0.1;
+
+/** True when a meaningful share of this item is projected to be wasted. */
+export const isAtWasteRisk = (
+  item: Pick<InventoryItem, 'quantity' | 'daily_usage' | 'expiry_date'>
+): boolean => getWasteRiskRatio(item) > WASTE_RISK_THRESHOLD;
+
+/** Rupee value of the surplus, or 0 when no cost is recorded. */
+export const getWasteRiskValue = (
+  item: Pick<InventoryItem, 'quantity' | 'daily_usage' | 'expiry_date' | 'cost_per_unit'>
+): number => getSurplusAtExpiry(item) * (item.cost_per_unit || 0);
 
 /**
  * Days-of-runway bands used to estimate the chance an item runs out within

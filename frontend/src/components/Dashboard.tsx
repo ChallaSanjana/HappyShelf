@@ -10,10 +10,11 @@ import { ForecastChart } from './ForecastChart';
 import { RecentActivity } from './RecentActivity';
 import Sidebar from './Sidebar';
 import AddMemberForm from './AddMemberForm';
+import AuditLogView from './AuditLogView';
 import { ReorderModal } from './ReorderModal';
 import { ConsumeModal } from './ConsumeModal';
 import { isExpiredOrExpiringSoon } from '../utils/expiry';
-import { getStockStatus, needsRestock } from '../utils/stock';
+import { getStockStatus, needsRestock, isAtWasteRisk } from '../utils/stock';
 import { generateInventoryReportPdf } from '../utils/reportGenerator';
 import { parseImportFile } from '../utils/csvImport';
 import { useToast } from '../contexts/ToastContext';
@@ -502,6 +503,11 @@ export const Dashboard = () => {
 
   const getOutOfStockItems = () => items.filter((i) => getStockStatus(i) === 'out');
 
+  // Overstock relative to shelf life. Independent of the two above: an item
+  // here is typically healthy on stock and only "expiring soon" on date,
+  // which is exactly why it needs its own surface.
+  const getWasteRiskItems = () => items.filter(isAtWasteRisk);
+
   const supplyConfidence = items.length === 0 ? 0 : Math.max(0, Math.min(100, Math.round(((items.length - getLowStockItems().length - getOutOfStockItems().length) / items.length) * 100)));
   // Units actually consumed in the last 30 days — a real activity figure,
   // replacing a "Recycling Rate" card that was really just the share of items
@@ -658,13 +664,18 @@ export const Dashboard = () => {
                 </div>
               </div>
 
-              {(getLowStockItems().length > 0 || getExpiringSoonItems().length > 0) && (
+              {(getLowStockItems().length > 0 ||
+                getExpiringSoonItems().length > 0 ||
+                getWasteRiskItems().length > 0) && (
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
                   {getLowStockItems().length > 0 && (
                     <AlertCard title="Low Stock Items" items={getLowStockItems()} type="stock" />
                   )}
                   {getExpiringSoonItems().length > 0 && (
                     <AlertCard title="Expiring Soon" items={getExpiringSoonItems()} type="expiry" />
+                  )}
+                  {getWasteRiskItems().length > 0 && (
+                    <AlertCard title="Overstocked — May Go To Waste" items={getWasteRiskItems()} type="waste" />
                   )}
                 </div>
               )}
@@ -1025,7 +1036,12 @@ export const Dashboard = () => {
                   // Items" cards at once.
                   const lowStockOnlyItems = getLowStockItems().filter((item) => (item.quantity ?? 0) > 0);
                   const expiringSoonItems = getExpiringSoonItems();
-                  const hasAlerts = outOfStockItems.length > 0 || lowStockOnlyItems.length > 0 || expiringSoonItems.length > 0;
+                  const wasteRiskItems = getWasteRiskItems();
+                  const hasAlerts =
+                    outOfStockItems.length > 0 ||
+                    lowStockOnlyItems.length > 0 ||
+                    expiringSoonItems.length > 0 ||
+                    wasteRiskItems.length > 0;
 
                   return hasAlerts ? (
                     <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
@@ -1037,6 +1053,9 @@ export const Dashboard = () => {
                       )}
                       {expiringSoonItems.length > 0 && (
                         <AlertCard title="Expiring Soon" items={expiringSoonItems} type="expiry" />
+                      )}
+                      {wasteRiskItems.length > 0 && (
+                        <AlertCard title="Overstocked — May Go To Waste" items={wasteRiskItems} type="waste" />
                       )}
                     </div>
                   ) : (
@@ -1228,6 +1247,8 @@ export const Dashboard = () => {
               </div>
             </div>
           )}
+
+          {view === 'auditLog' && role === 'Admin' && <AuditLogView />}
 
           {view === 'settings' && (
             <div className="mb-6">

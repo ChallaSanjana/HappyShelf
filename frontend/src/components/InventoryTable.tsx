@@ -1,7 +1,7 @@
 import { InventoryItem } from '../services/api';
 import { Pencil, Trash2 } from 'lucide-react';
 import { getDaysToExpiry } from '../utils/expiry';
-import { getDaysLeft, getStockStatus } from '../utils/stock';
+import { getDaysLeft, getStockStatus, isAtWasteRisk, getWasteRiskRatio } from '../utils/stock';
 
 const getCategoryColor = (category: string): string => {
   const colors: Record<string, string> = {
@@ -125,6 +125,7 @@ export const InventoryTable = ({ items, onEdit, onDelete, onReorder, onConsume, 
             <th className="px-6 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">Expiry Date</th>
             <th className="px-6 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">Stock Status</th>
             <th className="px-6 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">Expiry Status</th>
+            <th className="px-6 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">Waste Risk</th>
             {!readOnly && <th className="px-6 py-3 text-right text-xs font-medium text-gray-700 uppercase tracking-wider">Actions</th>}
           </tr>
         </thead>
@@ -173,6 +174,23 @@ export const InventoryTable = ({ items, onEdit, onDelete, onReorder, onConsume, 
                     </span>
                   ) : (
                     <span className="text-xs text-gray-400">No expiry</span>
+                  )}
+                </td>
+                {/* A third, independent axis. Stock status says whether you
+                    will run out; expiry status says whether the date has
+                    passed; this says whether you can realistically finish
+                    what you have before it does. Neither of the other two
+                    changed meaning. */}
+                <td className="px-6 py-4 whitespace-nowrap">
+                  {isAtWasteRisk(item) ? (
+                    <span
+                      className="px-2 py-1 inline-flex text-xs leading-5 font-semibold rounded-full bg-amber-100 text-amber-800"
+                      title={`About ${Math.round(getWasteRiskRatio(item) * 100)}% of this is unlikely to be used before it expires`}
+                    >
+                      Overstocked
+                    </span>
+                  ) : (
+                    <span className="text-xs text-gray-400">—</span>
                   )}
                 </td>
                 {!readOnly && (

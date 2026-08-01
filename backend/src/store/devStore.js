@@ -29,3 +29,45 @@ export function findDevUserById(userId) {
 export function isDevModeId(id) {
   return typeof id === 'string' && id.startsWith('dev_');
 }
+
+/**
+ * In-memory mirror of PasswordResetToken, used when there is no database.
+ *
+ * Only ever holds the SHA-256 hash of a token, never the raw value — same
+ * rule as the persisted model. Losing this Map on restart is an accepted
+ * property of dev mode generally (devUsers/devInventory do too), not a
+ * relaxation made specifically for reset tokens.
+ *
+ * tokenHash -> { userId, expiresAt: <ms epoch>, usedAt: <ms epoch> | null }
+ */
+const devPasswordResetTokens = new Map();
+
+export function createDevResetToken(userId, tokenHash, expiresAt) {
+  devPasswordResetTokens.set(tokenHash, { userId, expiresAt: expiresAt.getTime(), usedAt: null });
+}
+
+export function findDevResetToken(tokenHash) {
+  return devPasswordResetTokens.get(tokenHash) || null;
+}
+
+/**
+ * Marks one token spent and, mirroring the Mongo path, sweeps every other
+ * still-live token for the same user — a second outstanding link becomes
+ * pointless the moment one of them is used.
+ */
+export function consumeDevResetToken(tokenHash) {
+  const spent = devPasswordResetTokens.get(tokenHash);
+  if (!spent) return;
+
+  const now = Date.now();
+  for (const record of devPasswordResetTokens.values()) {
+    if (record.userId === spent.userId && record.usedAt === null) {
+      record.usedAt = now;
+    }
+  }
+}
+
+/** Test-only: wipes every outstanding reset token between test cases. */
+export function clearDevPasswordResetTokens() {
+  devPasswordResetTokens.clear();
+}
