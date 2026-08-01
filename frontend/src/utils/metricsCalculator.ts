@@ -5,7 +5,6 @@ import {
   needsRestock,
   isAtWasteRisk,
   getWasteRiskValue,
-  CARBON_PER_WELL_MANAGED_ITEM,
 } from './stock';
 
 export interface CalculatedMetrics {
@@ -17,7 +16,6 @@ export interface CalculatedMetrics {
   wasteRiskValue: number;
   categoryCounts: Record<string, number>;
   predictedSavings: number;
-  carbonReduced: number;
 }
 
 /**
@@ -51,7 +49,6 @@ export const calculateMetrics = (items: InventoryItem[]): CalculatedMetrics => {
       wasteRiskValue: 0,
       categoryCounts: {},
       predictedSavings: 0,
-      carbonReduced: 0,
     };
   }
 
@@ -78,9 +75,6 @@ export const calculateMetrics = (items: InventoryItem[]): CalculatedMetrics => {
     wellManaged.reduce((sum, item) => sum + (item.quantity || 0) * (item.cost_per_unit || 0), 0)
   );
 
-  const carbonReduced =
-    Math.round(wellManaged.length * CARBON_PER_WELL_MANAGED_ITEM * 100) / 100;
-
   return {
     totalItems,
     lowStockItems,
@@ -90,6 +84,5 @@ export const calculateMetrics = (items: InventoryItem[]): CalculatedMetrics => {
     wasteRiskValue,
     categoryCounts,
     predictedSavings,
-    carbonReduced,
   };
 };
