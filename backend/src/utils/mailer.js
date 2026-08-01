@@ -44,10 +44,39 @@ function getTransporter() {
   return transporter;
 }
 
+/**
+ * Decides who a message is addressed to, and who is merely copied.
+ *
+ * Broadcast mail (stock alerts) BCCs its recipients: joining a household's
+ * members into a visible `to` header disclosed every member's address to
+ * everyone else on the team, including members an Admin added who never
+ * consented to sharing it.
+ *
+ * That form is wrong for one-recipient, sensitive mail, because it sets
+ * `to: from` to keep a valid To header — which made the sending account a
+ * real envelope recipient. The app's own mailbox therefore received a copy
+ * of every password-reset email, each carrying a working reset link for
+ * somebody else's account. `direct` addresses the recipient properly and
+ * copies nobody.
+ *
+ * Exported so both shapes are pinned by tests rather than only reachable
+ * through a live SMTP connection.
+ */
+export function buildEnvelope({ from, recipients, direct = false }) {
+  return direct ? { from, to: recipients } : { from, to: from, bcc: recipients };
+}
+
 // Never throws — a bad SMTP config or a transient send failure should log,
 // not take down the inventory action (consume/update/create) that triggered
 // the notification.
-export async function sendMail({ to, subject, text, html }) {
+/**
+ * @param {object} options
+ * @param {string|string[]} options.to      Recipient(s).
+ * @param {boolean} [options.direct=false]  Address the recipient in `to`
+ *   rather than BCC-ing them. Required for anything only one person may
+ *   ever see — see buildEnvelope.
+ */
+export async function sendMail({ to, subject, text, html, direct = false }) {
   const recipients = Array.isArray(to) ? to.filter(Boolean) : [to].filter(Boolean);
   if (recipients.length === 0) return;
 
@@ -58,21 +87,10 @@ export async function sendMail({ to, subject, text, html }) {
   }
 
   const from = process.env.EMAIL_FROM || process.env.SMTP_USER;
+  const envelope = buildEnvelope({ from, recipients, direct });
 
   try {
-    // Recipients go in `bcc`, not `to`. Joining them into a visible `to`
-    // header disclosed every household member's address to everyone else on
-    // the team — including members who were only ever added by an Admin and
-    // never consented to sharing it. `to` is set to the sending address so
-    // the message still has a valid, non-empty To header.
-    await t.sendMail({
-      from,
-      to: from,
-      bcc: recipients,
-      subject,
-      text,
-      html,
-    });
+    await t.sendMail({ ...envelope, subject, text, html });
   } catch (error) {
     console.error('Failed to send email:', error.message);
   }
@@ -97,22 +115,40 @@ export async function sendStockAlert(recipients, item, status) {
   await sendMail({ to: emails, subject, text: lines.join('\n') });
 }
 
+/** Minimal HTML escape for values interpolated into the email body. */
+function escapeHtml(value) {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
 /**
  * The password reset link.
  *
  * The raw token appears here and nowhere else — it is not logged, not
- * persisted, and not echoed in any API response. Sent to a single recipient
- * with no BCC, since only the account owner should ever see it.
+ * persisted, and not echoed in any API response. Sent `direct` so the
+ * recipient is addressed in `to` and nobody is copied: the default BCC form
+ * sets `to: from`, which made the sending account an envelope recipient of
+ * every reset email — a working link for someone else's account landing in
+ * the app owner's inbox.
+ *
+ * An HTML body is included because the link is long (base URL + a 64-char
+ * token). Quoted-printable wraps plain text at 76 columns, so the URL gets a
+ * soft line break inserted mid-token; correct clients rejoin it, but ones
+ * that auto-linkify the raw text often truncate the link at the wrap and
+ * produce a dead or partial URL. A real anchor sidesteps that entirely, and
+ * the plain-text part stays as the fallback.
  */
-export async function sendPasswordResetEmail(recipient, rawToken) {
-  if (!recipient?.email) return;
-
+export function buildPasswordResetMessage(recipient, rawToken) {
   const base = (process.env.APP_URL || 'http://localhost:5173').replace(/\/+$/, '');
   const link = `${base}/#/reset-password?token=${encodeURIComponent(rawToken)}`;
   const minutes = Number(process.env.PASSWORD_RESET_TTL_MINUTES) || 30;
+  const greeting = `Hi${recipient.name ? ' ' + recipient.name : ''},`;
 
-  const lines = [
-    `Hi${recipient.name ? ' ' + recipient.name : ''},`,
+  const text = [
+    greeting,
     '',
     'Someone asked to reset the password for your HappyShelf account.',
     'Open the link below to choose a new one:',
@@ -121,11 +157,26 @@ export async function sendPasswordResetEmail(recipient, rawToken) {
     '',
     `The link expires in ${minutes} minutes and can only be used once.`,
     "If this wasn't you, ignore this email — your password stays as it is.",
-  ];
+  ].join('\n');
 
-  await sendMail({
-    to: recipient.email,
-    subject: 'Reset your HappyShelf password',
-    text: lines.join('\n'),
-  });
+  const safeLink = escapeHtml(link);
+  const html = [
+    `<p>${escapeHtml(greeting)}</p>`,
+    '<p>Someone asked to reset the password for your HappyShelf account.</p>',
+    `<p><a href="${safeLink}">Choose a new password</a></p>`,
+    `<p>If the link above doesn't work, copy this address:<br>`,
+    `<span style="word-break:break-all">${safeLink}</span></p>`,
+    `<p>The link expires in ${minutes} minutes and can only be used once.<br>`,
+    "If this wasn't you, ignore this email — your password stays as it is.</p>",
+  ].join('\n');
+
+  return { link, subject: 'Reset your HappyShelf password', text, html };
+}
+
+export async function sendPasswordResetEmail(recipient, rawToken) {
+  if (!recipient?.email) return;
+
+  const { subject, text, html } = buildPasswordResetMessage(recipient, rawToken);
+
+  await sendMail({ to: recipient.email, subject, text, html, direct: true });
 }

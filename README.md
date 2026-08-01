@@ -21,7 +21,7 @@ Every chart in the app is drawn from records the household actually created — 
 - **Team management** — Admins and Managers add household members directly, choosing the member's initial password, and manage their roles. There is no email invitation flow; accounts are created ready to use.
 - **PDF Inventory Report** — single-click, branded, multi-page report covering inventory summary, category breakdown, complete inventory, low-stock report, expiry report, ML prediction summary, spending & cost analysis, sustainability report, and consumption history.
 - **Resilient by design** — outside production the backend falls back to an in-memory store when MongoDB is unreachable, and it always falls back to a JS heuristic when the ML service is unreachable, so local development is never blocked. In production a missing database is a startup failure rather than a silent data-loss trap.
-- **Tested** — 450 tests (206 backend, 184 frontend, 47 ML service, 13 end-to-end) run on every push (see `.github/workflows/ci.yml`). The E2E suite drives a real browser against a real backend.
+- **Tested** — 461 tests (217 backend, 184 frontend, 47 ML service, 13 end-to-end) run on every push (see `.github/workflows/ci.yml`). The E2E suite drives a real browser against a real backend.
 
 ## Tech Stack
 
@@ -199,7 +199,7 @@ Runs at `http://localhost:5173`.
 
 ## Available Scripts
 
-**Backend** (`backend/`): `npm run dev` (watch mode), `npm start`, `npm test` (206 tests), `npm run test:watch`
+**Backend** (`backend/`): `npm run dev` (watch mode), `npm start`, `npm test` (217 tests), `npm run test:watch`
 **Frontend** (`frontend/`): `npm run dev`, `npm run build`, `npm run lint`, `npm run typecheck`, `npm test` (184 tests), `npm run test:watch`, `npm run test:coverage`, `npm run preview`
 **End-to-end** (`frontend/`): `npm run test:e2e` (13 tests)
 **ML service** (`ml_service/`): `python -m uvicorn main:app --reload --port 8000`, `python -m pytest` (47 tests)
@@ -435,6 +435,24 @@ flood a third party's inbox.
 Set `APP_URL` to the deployed frontend's URL. It only affects the link inside
 the email, so getting it wrong fails quietly — people receive a working reset
 link pointing at `localhost`.
+
+**The reset email is addressed to the recipient and copies nobody.** That is
+worth stating explicitly because the stock-alert path deliberately does the
+opposite: it BCCs a household's members so they don't see each other's
+addresses, and to keep a valid `To` header it sets `to: <the sending
+account>`. Routing the reset email through that same path made the sending
+account a real envelope recipient — so the app's own mailbox received a copy
+of every reset email, each carrying a working link for somebody else's
+account. `sendMail`'s `direct` option now separates the two shapes, and
+`buildEnvelope` is a pure exported function so both are pinned by tests
+rather than only observable over a live SMTP connection.
+
+The email carries an **HTML body with a real anchor**, not just plain text.
+The link is long (base URL plus a 64-character token), and quoted-printable
+soft-wraps plain text at 76 columns — putting a line break mid-token.
+Standards-compliant clients rejoin it, but ones that auto-linkify the raw
+text often truncate at the wrap and produce a dead link. The plain-text
+version is kept as the fallback.
 
 ## Audit log
 
