@@ -15,10 +15,13 @@ Every chart in the app is drawn from records the household actually created — 
 - **ML Predictions** — 7-day demand forecast, expiry risk, low-stock probability, and purchase recommendations per item, from scikit-learn models. The demand forecast is fitted on **your household's own consumption log** where there's enough of it, falling back to the shipped training data and then to a flat projection — each item reports which tier produced it (see [Forecast sources](#forecast-sources)). A JS heuristic covers the ML service being unreachable entirely, with a visible "Live ML Model" / "Heuristic Fallback" badge.
 - **Sustainability tracking** — food waste tracker, CO₂e avoided per week (from stock actually consumed rather than binned), used-before-expiry efficiency, sustainability score, smart recommendations.
 - **Action Plans** — auto-generated restock/use-soon checklists derived from current inventory state, using the same stock and expiry rules as every other surface (including already-expired items, which an earlier version silently skipped).
+- **Overstock / waste risk** — flags stock that will not be used up before it expires (`quantity − daily_usage × daysToExpiry`, past a 10% threshold), shown as a table badge, a dedicated alert card and two stats fields. A **third, independent axis**: an item can be perfectly healthy on stock and merely "expiring soon" on date while still being the thing most likely to be binned. Neither existing status changed meaning.
+- **Forgot / reset password** — self-service reset over email. Tokens are single-use, expire in 30 minutes, and are stored **only as a SHA-256 hash**, so a leaked database yields no usable links. Completing a reset revokes every existing session for that account.
+- **Audit log** — an Admin-only, read-only record of who did what: item add/edit/delete/consume/reorder, bulk import, every team role/status change, and account & security events. Filterable and paginated. There is no endpoint to edit or delete an entry.
 - **Team management** — Admins and Managers add household members directly, choosing the member's initial password, and manage their roles. There is no email invitation flow; accounts are created ready to use.
 - **PDF Inventory Report** — single-click, branded, multi-page report covering inventory summary, category breakdown, complete inventory, low-stock report, expiry report, ML prediction summary, spending & cost analysis, sustainability report, and consumption history.
 - **Resilient by design** — outside production the backend falls back to an in-memory store when MongoDB is unreachable, and it always falls back to a JS heuristic when the ML service is unreachable, so local development is never blocked. In production a missing database is a startup failure rather than a silent data-loss trap.
-- **Tested** — 273 tests (129 backend, 111 frontend, 33 ML service) run on every push (see `.github/workflows/ci.yml`).
+- **Tested** — 450 tests (206 backend, 184 frontend, 47 ML service, 13 end-to-end) run on every push (see `.github/workflows/ci.yml`). The E2E suite drives a real browser against a real backend.
 
 ## Tech Stack
 
@@ -27,7 +30,7 @@ Every chart in the app is drawn from records the household actually created — 
 | Frontend | React 18 + TypeScript, Vite, Tailwind CSS, Chart.js, jsPDF + jspdf-autotable, Lucide icons |
 | Backend | Node.js + Express, MongoDB + Mongoose, JWT (jsonwebtoken) + bcrypt, helmet, express-rate-limit |
 | ML Service | Python, FastAPI, scikit-learn (Decision Tree classifiers/regressors), pandas/numpy, joblib |
-| Testing | `node --test` + supertest (backend), Vitest + Testing Library (frontend), pytest (ML) |
+| Testing | `node --test` + supertest (backend), Vitest + Testing Library (frontend), pytest (ML), Playwright (end-to-end) |
 
 ## Project Structure
 
@@ -41,17 +44,20 @@ HappyShelf/
 │   │   │   ├── Item.js
 │   │   │   ├── ReorderHistory.js
 │   │   │   ├── ConsumptionHistory.js
-│   │   │   └── ActionPlan.js
-│   │   ├── controllers/                # authController, inventoryController, teamController, actionPlanController
+│   │   │   ├── ActionPlan.js
+│   │   │   ├── AuditLog.js             # append-only; never updated or deleted via the API
+│   │   │   └── PasswordResetToken.js   # stores ONLY the SHA-256 hash, never the raw token
+│   │   ├── controllers/                # auth, inventory, team, actionPlan, auditLog
 │   │   ├── middleware/                 # auth.js (JWT + live role/status check), rateLimiter.js
-│   │   ├── routes/                     # authRoutes, inventoryRoutes, teamRoutes, actionPlanRoutes
-│   │   ├── store/devStore.js           # in-memory user store used when the DB is down
+│   │   ├── routes/                     # auth, inventory, team, actionPlan, auditLog
+│   │   ├── store/devStore.js           # in-memory users + reset tokens, used when the DB is down
 │   │   ├── utils/
 │   │   │   ├── inventoryMetrics.js     # SINGLE SOURCE OF TRUTH for stock/expiry/stats rules
 │   │   │   │                           #   (used by controllers, filters, alerts AND action plans)
 │   │   │   ├── inventoryQuery.js       # search/filter/sort/pagination
 │   │   │   ├── itemValidation.js       # shared by POST /items and bulk import
-│   │   │   ├── mailer.js               # low/out-of-stock alert emails (BCC)
+│   │   │   ├── auditLog.js             # recordAudit() + the action vocabulary
+│   │   │   ├── mailer.js               # stock alerts (BCC) + password-reset links
 │   │   │   └── historyJson.js          # shared camelCase envelope for reorder/consumption history
 │   │   └── server.js
 │   ├── __tests__/                      # node --test + supertest
@@ -59,13 +65,15 @@ HappyShelf/
 ├── frontend/
 │   ├── src/
 │   │   ├── components/                 # Dashboard, InventoryExplorer, InventoryTable, ItemModal,
-│   │   │                                #   ReorderModal, ConsumeModal, Sidebar, Login/Register, ...
+│   │   │                                #   ReorderModal, ConsumeModal, Sidebar, Login/Register,
+│   │   │                                #   ForgotPassword, ResetPassword, AuditLogView, ...
 │   │   │   ├── predictions/            # DemandForecast, ExpiryForecast, LowStockForecast, ...
 │   │   │   ├── stats/                  # UsageTrends, StockLevelsChart, CategoryInsights, ...
 │   │   │   ├── sustainability/         # FoodWasteTracker, CO2Impact, SustainabilityScore, ...
 │   │   │   └── charts/                 # shared chart primitives
 │   │   ├── contexts/                   # AuthContext.tsx, ToastContext.tsx
-│   │   ├── hooks/                      # useHashRoute, useUserSettings, useModalDismiss
+│   │   ├── hooks/                      # useHashRoute, useUserSettings, useModalDismiss,
+│   │   │                                #   useResetPasswordToken (routes the emailed link)
 │   │   ├── services/
 │   │   │   ├── httpClient.ts           # single fetch entry point; handles 401/session expiry
 │   │   │   └── api.ts                  # typed client for the whole backend API
@@ -75,6 +83,9 @@ HappyShelf/
 │   │       ├── history.ts              # bucketing for every analytics chart
 │   │       ├── sustainability.ts       # shared "wasted" definition + CO2 factors
 │   │       ├── csvImport.ts, reorder.ts, metricsCalculator.ts, reportGenerator.ts
+│   ├── e2e/                            # Playwright: smoke, team, actionPlans, loadError,
+│   │                                   #   wasteRisk, auditLog, passwordReset
+│   ├── playwright.config.ts            # spawns a real backend + frontend per run
 │   └── .env.example
 ├── ml_service/
 │   ├── main.py                         # FastAPI app, /predict + /health
@@ -93,18 +104,25 @@ HappyShelf/
 | Create / edit / delete items, reorder, consume | ✅ | ✅ | ✅ | ❌ |
 | Manage action plans | ✅ | ✅ | ✅ | ❌ |
 | Manage team members | ✅ | ✅ | ❌ | ❌ |
+| View the audit log | ✅ | ❌ | ❌ | ❌ |
 
 The account created via `/auth/register` is always the household's first `Admin`; further members are added from the Team page.
 
+The audit log is Admin-only on purpose: a Manager can add and re-role
+`Staff`/`Viewer` members, but reviewing who else did what across the whole
+household is a separate privilege. The sidebar hides the link for everyone
+else, and the route refuses them independently — the hidden link is a
+convenience, not the boundary.
+
 A Manager may only assign or act on `Staff`/`Viewer` accounts — never an `Admin` or a peer `Manager` — and nobody may change their own role or active status unless they are an Admin. A household can never be left with zero active Admins.
 
-Changing a member's role, deactivating them, resetting their password, or removing them **immediately invalidates their existing sessions**; their next request returns 401/403 and the UI returns them to the login screen with an explanation.
+Changing a member's role, deactivating them, resetting their password, or removing them **immediately invalidates their existing sessions**; their next request returns 401/403 and the UI returns them to the login screen with an explanation. Completing a self-service password reset does the same.
 
 ## Getting Started
 
 ### Prerequisites
 
-- Node.js 18+
+- Node.js 22+ (CI runs 24 — `node --test` only accepts glob patterns from 22, which the backend test script relies on)
 - Python 3.10+
 - MongoDB (local install or MongoDB Atlas) — optional for local dev; the backend runs in an in-memory fallback mode without it
 
@@ -132,6 +150,10 @@ CORS_ORIGIN=http://localhost:5173
 # Optional — the backend falls back to a JS heuristic if unreachable.
 ML_SERVICE_URL=http://127.0.0.1:8000
 ML_SERVICE_TOKEN=
+
+# Where password-reset links point. Wrong values fail quietly — people just
+# receive a link to localhost — so set it for any deployment.
+APP_URL=http://localhost:5173
 ```
 
 Backend runs at `http://localhost:5000`.
@@ -177,11 +199,21 @@ Runs at `http://localhost:5173`.
 
 ## Available Scripts
 
-**Backend** (`backend/`): `npm run dev` (watch mode), `npm start`, `npm test` (129 tests), `npm run test:watch`
-**Frontend** (`frontend/`): `npm run dev`, `npm run build`, `npm run lint`, `npm run typecheck`, `npm test` (111 tests), `npm run test:watch`, `npm run test:coverage`, `npm run preview`
-**ML service** (`ml_service/`): `python -m uvicorn main:app --reload --port 8000`, `python -m pytest` (33 tests)
+**Backend** (`backend/`): `npm run dev` (watch mode), `npm start`, `npm test` (206 tests), `npm run test:watch`
+**Frontend** (`frontend/`): `npm run dev`, `npm run build`, `npm run lint`, `npm run typecheck`, `npm test` (184 tests), `npm run test:watch`, `npm run test:coverage`, `npm run preview`
+**End-to-end** (`frontend/`): `npm run test:e2e` (13 tests)
+**ML service** (`ml_service/`): `python -m uvicorn main:app --reload --port 8000`, `python -m pytest` (47 tests)
 
-All three run in CI on every push and pull request (`.github/workflows/ci.yml`).
+All four run in CI on every push and pull request (`.github/workflows/ci.yml`).
+
+`npm run test:e2e` needs no setup: `playwright.config.ts` starts its own
+backend and frontend on dedicated ports (5178/5174, deliberately not the dev
+defaults) and points the backend at an unreachable database so it uses the
+in-memory store. Each run therefore starts from a clean slate and cannot touch
+a real MongoDB or a dev stack you have open. That is also exactly what CI
+gets, where no database exists at all. SMTP is never contacted under
+`NODE_ENV=test` or `test-e2e`, so no test can email anyone even with real
+credentials in `backend/.env`.
 
 ## API Reference
 
@@ -192,6 +224,10 @@ All routes below except `/auth/*` require `Authorization: Bearer <token>`.
 |---|---|---|
 | POST | `/register` | Creates a household + its first Admin user |
 | POST | `/login` | Rate-limited |
+| POST | `/forgot-password` | Unauthenticated. **Always** returns the same generic 200 whether or not the address exists — see [Password reset](#password-reset). Rate-limited to 10/hour |
+| POST | `/reset-password` | Unauthenticated; the token authorises the change. Single-use, 30-minute expiry. Revokes all sessions for the account |
+| GET | `/me` | Re-reads the signed-in account, so a stale cached role can't linger |
+| PATCH | `/me` | Update own name / email-notification preference |
 
 ### Inventory — `/api/inventory`
 | Method | Path | Roles | Notes |
@@ -205,7 +241,7 @@ All routes below except `/auth/*` require `Authorization: Bearer <token>`.
 | PATCH | `/items/:id/consume` | Admin/Manager/Staff | Atomic, never below zero, never more than in stock |
 | GET | `/reorder-history` | any | Newest first. `limit` (default 50, max 2000) and `days` narrow the window |
 | GET | `/consumption-history` | any | Same `limit`/`days` params — the analytics charts request a year |
-| GET | `/stats` | any | Aggregate dashboard metrics |
+| GET | `/stats` | any | Aggregate dashboard metrics, including `wasteRiskItems` and `wasteRiskValue` |
 | GET | `/predictions` | any | Proxies to the ML service with the household's consumption history; JS fallback if unreachable |
 
 ### Health — `/api/health`
@@ -215,6 +251,15 @@ All routes below except `/auth/*` require `Authorization: Bearer <token>`.
 
 ### Team — `/api/team` (Admin/Manager only)
 `GET /`, `POST /`, `PUT /:id`, `DELETE /:id`
+
+### Audit Log — `/api/audit-log` (Admin only)
+| Method | Path | Notes |
+|---|---|---|
+| GET | `/` | Newest first. `page`, `limit` (default 50, max 200), `action`, `targetType` |
+
+Read-only by design — there is deliberately no endpoint to create, edit or
+delete an entry. An audit log the audited party can rewrite is worse than
+none, because it still looks trustworthy.
 
 ### Action Plans — `/api/action-plans`
 `GET /` (any), `POST /`, `PATCH /:planId/tasks/:taskId`, `DELETE /:planId` (Admin/Manager/Staff)
@@ -313,6 +358,7 @@ action produces the data. None of them fall back to a generated series.
 - **`lowStockItems`** in the stats counts everything needing restock attention, i.e. both `low` and `out`.
 - **Suggested reorder quantity**: bring stock up to `max(min_stock_level, ceil(daily_usage × 14), 1)`, floored at adding at least 1 unit.
 - **Sustainability "wasted"**: out of stock, or already past expiry.
+- **Overstock / waste risk**: `surplus = max(0, quantity − daily_usage × daysToExpiry)`, flagged when `surplus / quantity > 0.10`. No expiry date, or zero quantity, means not applicable; no consumption at all, or already past the date, means the whole quantity is at risk. A **separate axis** from the two above — see below.
 
 These rules live in exactly two places — `backend/src/utils/inventoryMetrics.js` and its client mirror `frontend/src/utils/stock.ts` + `expiry.ts`. Two implementations exist so the dashboard can recompute instantly without a round trip; `fixtures/inventory-metrics.json` is a shared fixture set that **both** test suites run through **both** implementations, so the two cannot drift apart. If you change a rule on one side, change it on the other in the same commit.
 
@@ -328,6 +374,92 @@ an action plan most needs to raise. Regression tests for both now live in
 Similarly, the "wasted" definition and the per-category CO₂ factors are shared
 from `frontend/src/utils/sustainability.ts` rather than copy-pasted into the
 waste tracker, the CO₂ chart, the sustainability score and the PDF report.
+
+### Why waste risk is its own axis
+
+Stock status answers *will I run out?* Expiry status answers *has the date
+passed?* Neither answers *can I realistically finish this before it spoils?*
+
+The case that motivated it: 100 kg of carrots consumed at 0.2 kg/day, expiring
+in three days. Stock status reads **Good** — 500 days of runway, nowhere near
+running out. Expiry status reads **Expiring soon**, which is true but sounds
+routine. Yet roughly 99 kg of it is going in the bin, and before this there was
+no surface anywhere in the app saying so.
+
+So waste risk is reported *alongside* the other two rather than folded into
+either. Collapsing them would have been worse: a reorder legitimately changes
+stock status and legitimately does **not** change an existing batch's expiry
+date, so a merged "status" column would make restocking appear to fix a
+spoilage problem it never touched.
+
+The 10% threshold exists because `daily_usage` is a user estimate. Flagging a
+2% projected overshoot would be noise; the shared fixtures pin an item at
+*exactly* 0.10 as a boundary case, and the comparison is strictly
+greater-than, so it stays safe.
+
+## Password reset
+
+Self-service reset, designed so that neither the database nor the endpoint
+leaks anything useful.
+
+**Tokens are never stored in raw form.** `PasswordResetToken` persists only a
+SHA-256 hash of the token; the raw value exists exactly once, in the email
+that was sent, and is unrecoverable afterwards. A leaked database — or a
+backup, or a dev's in-memory dump — yields no working links. SHA-256 rather
+than bcrypt is deliberate: the token is 32 bytes of CSPRNG output with no
+guessable structure for a slow hash to defend, and lookup must be a single
+indexed query rather than a bcrypt comparison against every outstanding row.
+
+**Single-use and short-lived.** 30 minutes by default
+(`PASSWORD_RESET_TTL_MINUTES`). The token is marked spent *before* the new
+password is written, so a failure midway still burns the link — the safer
+direction to fail in. Completing a reset also expires every other outstanding
+link for that account.
+
+**No account enumeration.** `/forgot-password` returns an identical 200 and
+message whether or not the address is registered — saying "no such user"
+would turn it into a free membership oracle, worth more to an attacker than
+the reset itself. Deactivated accounts are silently excluded too: a reset must
+not become a way back in past a deactivation. Every failure mode on
+`/reset-password` (expired, already spent, never existed) returns one
+indistinguishable message.
+
+**Sessions are revoked.** A completed reset bumps the account's
+`token_version`, so every JWT issued before it stops working — the usual
+reason to reset a password is that someone else may have had it.
+
+Both endpoints are rate-limited to 10 requests/hour, tighter than login:
+`/forgot-password` sends real email, so an unthrottled caller could use it to
+flood a third party's inbox.
+
+Set `APP_URL` to the deployed frontend's URL. It only affects the link inside
+the email, so getting it wrong fails quietly — people receive a working reset
+link pointing at `localhost`.
+
+## Audit log
+
+An append-only record of who did what, covering item add/edit/delete/consume/
+reorder, bulk import, every team membership and role change, and account and
+security events. Sixteen actions in total; the vocabulary lives in
+`AUDIT_ACTIONS` in `backend/src/utils/auditLog.js` so callers can't invent
+typo'd action names.
+
+A few decisions worth knowing:
+
+- **Read-only.** No endpoint creates, edits or deletes an entry. Recording
+  happens as a side effect of the action being audited.
+- **Admin-only** to read, enforced at the route, not just hidden in the UI.
+- **The actor is denormalised.** Each entry stores the actor's name and email
+  as plain strings rather than only a reference, so it still reads correctly
+  after that member has been renamed or removed from the household — which is
+  exactly when you are most likely to be reading it.
+- **Recording can never fail the action.** Every write is fire-and-forget and
+  swallows its own errors: a full disk must not turn a successful consume into
+  a 500. The trade is deliberate — this is an operational record, not a ledger
+  the business depends on being complete.
+- **Nothing sensitive is stored.** A password change records *that* it
+  happened, never the value. There's a regression test asserting the new
+  password does not appear anywhere in the entry.
 
 ## A note on the frontend lockfile
 
@@ -409,12 +541,19 @@ Serve `ml_service` behind a process manager (e.g. gunicorn + uvicorn workers) in
 
 Set `NODE_ENV=production` on the backend. That makes a missing `JWT_SECRET` and an unreachable database hard startup failures instead of silent degradation.
 
+Set `APP_URL` to the deployed frontend's URL as well. Unlike the two above it
+fails *quietly* — password-reset emails still send, they just contain a link
+pointing at `localhost`.
+
 ## Notes
 
 - Passwords are hashed with bcrypt; JWTs expire after 7 days, and are additionally revocable — every token carries a `token_version` that the server bumps on any role change, deactivation, or password reset.
-- Data is isolated per household via `householdId`/`user_id`; every query is scoped to the authenticated user's household.
+- Data is isolated per household via `household_id`; every query is scoped to the authenticated user's household. (The field was called `user_id` until the migration documented above — it always held a household id, never a user id.)
 - If MongoDB is unreachable **outside production**, the backend serves from an in-memory store so local development isn't blocked — this data does not persist across restarts. Under `NODE_ENV=production` the process exits instead, rather than accepting writes it would silently lose.
 - Every route under `/api` is rate limited; auth and the expensive endpoints (ML predictions, bulk import) have tighter budgets. Limits are keyed by user id when authenticated, so household members behind one connection don't share a bucket.
 - `is_ml: true/false` on the predictions response (and the "Live ML Model" / "Heuristic Fallback" badge in the UI) tells you whether predictions came from the ML service or the JS fallback. `forecast_source` on each item is finer-grained — see [Forecast sources](#forecast-sources).
 - The JS fallback uses the same consumption history the ML service would have learned from, so an item with real usage data still gets a forecast grounded in it when the ML service is down.
 - History endpoints default to the newest 50 entries. The analytics views request `limit=2000&days=365`; the server caps `limit` at 2000 regardless of what's asked for.
+- Password-reset tokens are stored only as a SHA-256 hash, are single-use, expire in 30 minutes, and revoke every existing session on completion — see [Password reset](#password-reset).
+- The audit log is Admin-only and read-only; recording an action can never fail the action itself — see [Audit log](#audit-log).
+- Waste risk is a third axis alongside stock and expiry status, not a change to either. An item can be `Good` on stock and `Expiring soon` on date and still be flagged `Overstocked`.
