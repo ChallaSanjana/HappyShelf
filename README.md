@@ -10,18 +10,19 @@ Every chart in the app is drawn from records the household actually created — 
 - **Inventory CRUD** — full item lifecycle (name, category, quantity, unit, daily usage, cost, min stock level, storage location, purchase/expiry dates), plus bulk CSV/JSON import (one request for the whole file) and CSV export.
 - **Search, filter, sort & pagination** — real-time search by name/category/storage location, filters for category/stock status/expiry status, five sort fields (name, quantity, price, total value, expiry date) in either direction, server-side pagination.
 - **Reorder & Consumption tracking** — dedicated "Reorder" and "Consume" actions (never below zero, never more than available), each maintaining a full history log (item, quantity, date, resulting stock) for analytics and demand forecasting.
-- **Dashboard & Alerts** — live stats (total items, low stock, out of stock, protected inventory value, carbon reduced), Low Stock / Expiring Soon / Out of Stock alert cards, recent activity feed.
+- **Dashboard & Alerts** — live stats (total items, low stock, out of stock, protected inventory value, CO₂e avoided over the last 30 days), Low Stock / Expiring Soon / Out of Stock alert cards, recent activity feed.
 - **Statistics & Analytics** — all derived from the reorder and consumption logs: monthly usage trends, weekly restocking spend, stock levels, category breakdown, and expiry distribution. Charts with no underlying records render an empty state instead of a generated curve.
 - **ML Predictions** — 7-day demand forecast, expiry risk, low-stock probability, and purchase recommendations per item, from scikit-learn models. The demand forecast is fitted on **your household's own consumption log** where there's enough of it, falling back to the shipped training data and then to a flat projection — each item reports which tier produced it (see [Forecast sources](#forecast-sources)). A JS heuristic covers the ML service being unreachable entirely, with a visible "Live ML Model" / "Heuristic Fallback" badge.
 - **Sustainability tracking** — food waste tracker, CO₂e avoided per week (from stock actually consumed rather than binned), used-before-expiry efficiency, sustainability score, smart recommendations.
 - **Action Plans** — auto-generated restock/use-soon checklists derived from current inventory state, using the same stock and expiry rules as every other surface (including already-expired items, which an earlier version silently skipped).
-- **Overstock / waste risk** — flags stock that will not be used up before it expires (`quantity − daily_usage × daysToExpiry`, past a 10% threshold), shown as a table badge, a dedicated alert card and two stats fields. A **third, independent axis**: an item can be perfectly healthy on stock and merely "expiring soon" on date while still being the thing most likely to be binned. Neither existing status changed meaning.
+- **Overstock / waste risk** — flags stock that will not be used up before it expires (`quantity − dailyUsage × daysToExpiry`, past a 10% threshold), shown as a table badge, a dedicated alert card and two stats fields. A **third, independent axis**: an item can be perfectly healthy on stock and merely "expiring soon" on date while still being the thing most likely to be binned. Neither existing status changed meaning.
+- **Usage rates learned from behaviour** — every derived figure (days left, low stock, waste risk, refill date) divides by what the household is *observed* to consume, falling back to the `daily_usage` they typed only where there isn't enough history. See [Observed vs. typed usage](#observed-vs-typed-usage).
 - **Forgot / reset password** — self-service reset over email. Tokens are single-use, expire in 30 minutes, and are stored **only as a SHA-256 hash**, so a leaked database yields no usable links. Completing a reset revokes every existing session for that account.
 - **Audit log** — an Admin-only, read-only record of who did what: item add/edit/delete/consume/reorder, bulk import, every team role/status change, and account & security events. Filterable and paginated. There is no endpoint to edit or delete an entry.
 - **Team management** — Admins and Managers add household members directly, choosing the member's initial password, and manage their roles. There is no email invitation flow; accounts are created ready to use.
 - **PDF Inventory Report** — single-click, branded, multi-page report covering inventory summary, category breakdown, complete inventory, low-stock report, expiry report, ML prediction summary, spending & cost analysis, sustainability report, and consumption history.
 - **Resilient by design** — outside production the backend falls back to an in-memory store when MongoDB is unreachable, and it always falls back to a JS heuristic when the ML service is unreachable, so local development is never blocked. In production a missing database is a startup failure rather than a silent data-loss trap.
-- **Tested** — 467 tests (217 backend, 190 frontend, 47 ML service, 13 end-to-end) run on every push (see `.github/workflows/ci.yml`). The E2E suite drives a real browser against a real backend.
+- **Tested** — 512 tests (250 backend, 202 frontend, 47 ML service, 13 end-to-end) run on every push (see `.github/workflows/ci.yml`). The E2E suite drives a real browser against a real backend.
 
 ## Tech Stack
 
@@ -54,6 +55,8 @@ HappyShelf/
 │   │   ├── utils/
 │   │   │   ├── inventoryMetrics.js     # SINGLE SOURCE OF TRUTH for stock/expiry/stats rules
 │   │   │   │                           #   (used by controllers, filters, alerts AND action plans)
+│   │   │   ├── observedUsage.js        # units/day derived from the consumption log,
+│   │   │   │                           #   preferred over the typed daily_usage
 │   │   │   ├── inventoryQuery.js       # search/filter/sort/pagination
 │   │   │   ├── itemValidation.js       # shared by POST /items and bulk import
 │   │   │   ├── auditLog.js             # recordAudit() + the action vocabulary
@@ -199,8 +202,8 @@ Runs at `http://localhost:5173`.
 
 ## Available Scripts
 
-**Backend** (`backend/`): `npm run dev` (watch mode), `npm start`, `npm test` (217 tests), `npm run test:watch`
-**Frontend** (`frontend/`): `npm run dev`, `npm run build`, `npm run lint`, `npm run typecheck`, `npm test` (190 tests), `npm run test:watch`, `npm run test:coverage`, `npm run preview`
+**Backend** (`backend/`): `npm run dev` (watch mode), `npm start`, `npm test` (250 tests), `npm run test:watch`
+**Frontend** (`frontend/`): `npm run dev`, `npm run build`, `npm run lint`, `npm run typecheck`, `npm test` (202 tests), `npm run test:watch`, `npm run test:coverage`, `npm run preview`
 **End-to-end** (`frontend/`): `npm run test:e2e` (13 tests)
 **ML service** (`ml_service/`): `python -m uvicorn main:app --reload --port 8000`, `python -m pytest` (47 tests)
 
@@ -335,6 +338,7 @@ Every chart is derived from stored records. The bucketing lives in
 | Restocking Spend | `ReorderHistory` × item's current `cost_per_unit` | 8 trailing weeks |
 | CO₂ Impact | `ConsumptionHistory` × per-category CO₂e factor | 8 trailing weeks |
 | Used (30 days) | `ConsumptionHistory` | 30 days |
+| CO₂ Avoided (30 days) | `ConsumptionHistory` × per-category CO₂e factor | 30 days |
 | Stock Levels, Category Breakdown, Expiry Analysis, Food Waste | current items | live |
 
 Two caveats stated in the UI as well as here:
@@ -350,15 +354,32 @@ Two caveats stated in the UI as well as here:
 A chart with no underlying records renders an empty state explaining which
 action produces the data. None of them fall back to a generated series.
 
+The stat tiles are held to the same standard. Three of them used to invent
+their numbers and sit next to the real ones in identical styling:
+
+| Removed tile | What it actually was |
+|---|---|
+| Waste Reduced | `(totalItems − expiringSoon) × 0.1`, with no unit and no basis |
+| Eco Score | the percentage of items not expiring, relabelled |
+| Expiries Prevented | `stats.expiringSoon` — the *inverse* of its label, a figure that rose as the household did worse |
+| Carbon Reduced | `wellManagedItems × 0.5` kg CO₂e — the same number for a bottle of vinegar as for 10 kg of beef, counted for stock merely sitting on a shelf |
+
+`carbonReduced` is gone from the stats API entirely. The CO₂ figure now shown
+is emissions avoided by stock actually consumed, priced with the same
+per-category factors as the CO₂ chart, so the tile and the chart can't
+disagree. The other three tiles were replaced with CO₂ avoided, units used,
+expiring soon (honestly labelled) and value at risk.
+
 ## Key Business Logic
 
-- **Low stock**: fewer than 3 days of supply remaining (`quantity / daily_usage`), **or** at/below a configured `min_stock_level`. The `min_stock_level` half applies even when `daily_usage` is 0 — that setting is the user stating what "low" means for that item.
+- **Effective daily usage**: the observed consumption rate where the household has enough history for one, otherwise the `daily_usage` they typed. Every rule below that mentions a usage rate means this one.
+- **Low stock**: fewer than 3 days of supply remaining (`quantity / dailyUsage`), **or** at/below a configured `min_stock_level`. The `min_stock_level` half applies even when the usage rate is 0 — that setting is the user stating what "low" means for that item.
 - **Expiring soon**: expires within 7 days, *or already expired* (a deliberate design choice — an expired item must never be missing from "expiring soon" surfaces).
 - **Out of stock**: `quantity <= 0`.
 - **`lowStockItems`** in the stats counts everything needing restock attention, i.e. both `low` and `out`.
 - **Suggested reorder quantity**: bring stock up to `max(min_stock_level, ceil(daily_usage × 14), 1)`, floored at adding at least 1 unit.
 - **Sustainability "wasted"**: out of stock, or already past expiry.
-- **Overstock / waste risk**: `surplus = max(0, quantity − daily_usage × daysToExpiry)`, flagged when `surplus / quantity > 0.10`. No expiry date, or zero quantity, means not applicable; no consumption at all, or already past the date, means the whole quantity is at risk. A **separate axis** from the two above — see below.
+- **Overstock / waste risk**: `surplus = max(0, quantity − dailyUsage × daysToExpiry)`, flagged when `surplus / quantity > 0.10`. Not applicable — surplus 0 — when there is no expiry date, no stock, or **no usage rate to project from**. Already past the date means the whole quantity is at risk, rate known or not. A **separate axis** from the two above — see below.
 
 These rules live in exactly two places — `backend/src/utils/inventoryMetrics.js` and its client mirror `frontend/src/utils/stock.ts` + `expiry.ts`. Two implementations exist so the dashboard can recompute instantly without a round trip; `fixtures/inventory-metrics.json` is a shared fixture set that **both** test suites run through **both** implementations, so the two cannot drift apart. If you change a rule on one side, change it on the other in the same commit.
 
@@ -374,6 +395,60 @@ an action plan most needs to raise. Regression tests for both now live in
 Similarly, the "wasted" definition and the per-category CO₂ factors are shared
 from `frontend/src/utils/sustainability.ts` rather than copy-pasted into the
 waste tracker, the CO₂ chart, the sustainability score and the PDF report.
+
+### Observed vs. typed usage
+
+`daily_usage` is typed once, when an item is created, and realistically never
+revisited. Yet days left, low stock, waste risk and the refill date all divide
+by it — so a rough guess made on day one silently drives every number in the
+app for months.
+
+Every Consume action is already recorded with a timestamp, which means the
+real rate is usually knowable. `backend/src/utils/observedUsage.js` turns that
+log into units/day per item, and `getEffectiveDailyUsage` prefers it over the
+typed figure:
+
+- **Threshold**: at least 8 distinct days with a consume event. Deliberately
+  the same bar the ML service uses to decide an item has enough history to fit
+  a demand model. Below it, one unusual week would move a low-stock alert, and
+  the typed figure is the safer answer.
+- **The divisor is elapsed days, not days-with-a-consume.** Eight consumes
+  spread over sixteen days is half a unit a day, not one. Days with no
+  consumption are real evidence of a slower rate; skipping them would
+  systematically overstate usage and make everything look urgent.
+- **Absent, never zero.** An item with too little history simply has no
+  `observed_daily_usage` field, so the fallback is a plain `??` rather than a
+  special case. A zero would read as "never consumed" and turn days-left into
+  Infinity.
+
+The server attaches it in `withObservedUsage` on the read paths — the item
+list (and therefore the search filters), the stats endpoint, and action-plan
+generation. That last one matters for consistency: without it, an item the
+dashboard calls low, because the household demonstrably burns through it
+faster than they claimed, would produce no restock task.
+
+It costs one extra indexed, bounded query per call, and failure is
+non-fatal — if the history lookup fails the typed rate is still a perfectly
+serviceable fallback.
+
+### Why a missing usage rate flags nothing
+
+Waste risk used to treat "no usage rate" as "none of it will ever be used"
+and flag the entire quantity — the strongest possible warning derived from the
+least possible information.
+
+`itemValidation.js` requires `daily_usage > 0`, so this is not reachable
+through the create or update endpoints as they stand. It is still worth
+fixing: the Mongoose schema allows `0` and *defaults* to it, so documents
+written by an import, a migration or a build predating that validation carry
+it, and `frontend/src/utils/stock.ts` computes from whatever the API returns.
+
+With no rate there is nothing to project from, so the honest answer is to make
+no claim: surplus 0. The one exception is stock that is *already* past its
+date, which is an observation about what has happened rather than a
+projection, and holds whether or not a rate is known. The guard order in
+`getSurplusAtExpiry` encodes exactly that, and `fixtures/inventory-metrics.json`
+pins both halves (`dated-but-untracked`, `already-expired`).
 
 ### Why waste risk is its own axis
 
