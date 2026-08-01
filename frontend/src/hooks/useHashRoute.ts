@@ -16,6 +16,7 @@ export const VIEWS = [
   'predictions',
   'sustainability',
   'team',
+  'auditLog',
   'settings',
 ] as const;
 

@@ -67,3 +67,16 @@ export const expensiveLimiter = makeLimiter({
     keyGenerator: userOrIpKey,
     message: { error: 'Too many requests for this operation. Please try again in a few minutes.' },
 });
+
+/**
+ * Applies to the password-reset endpoints.
+ *
+ * Tighter than login: /forgot-password sends real email, so an unthrottled
+ * caller could use it to spam a third party's inbox, and /reset-password is
+ * the one place a token could be brute-forced.
+ */
+export const passwordResetLimiter = makeLimiter({
+    windowMs: 60 * 60 * 1000, // 1 hour
+    limit: 10,
+    message: { error: 'Too many password reset attempts. Please try again later.' },
+});

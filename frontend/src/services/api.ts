@@ -28,6 +28,8 @@ export interface Stats {
   outOfStockItems: number;
   /** Expiring within 7 days *or already expired*. */
   expiringSoon: number;
+  wasteRiskItems: number;
+  wasteRiskValue: number;
   categoryCounts: Record<string, number>;
   predictedSavings: number;
   carbonReduced: number;
@@ -414,5 +416,72 @@ export const authApi = {
       fallbackError: 'Failed to update profile',
     });
     return data.user;
+  },
+
+  /**
+   * Always resolves with the same generic message, whether or not the
+   * address is registered — the backend deliberately gives an attacker
+   * nothing to distinguish. Callers should show the message as-is rather
+   * than inferring success/failure of the underlying lookup from it.
+   */
+  forgotPassword: async (email: string): Promise<{ message: string }> =>
+    apiRequest<{ message: string }>('/auth/forgot-password', {
+      method: 'POST',
+      body: { email },
+      fallbackError: 'Could not process the request. Please try again.',
+      skipAuthRedirect: true,
+    }),
+
+  resetPassword: async (token: string, password: string): Promise<{ message: string }> =>
+    apiRequest<{ message: string }>('/auth/reset-password', {
+      method: 'POST',
+      body: { token, password },
+      fallbackError: 'Could not reset the password. The link may have expired.',
+      skipAuthRedirect: true,
+    }),
+};
+
+export interface AuditLogEntry {
+  id: string;
+  householdId: string;
+  actorId: string | null;
+  actorName: string | null;
+  actorEmail: string | null;
+  action: string;
+  targetType: 'item' | 'member' | 'account' | 'household';
+  targetId: string | null;
+  targetName: string | null;
+  details: Record<string, unknown>;
+  createdAt: string;
+}
+
+export interface AuditLogResult {
+  entries: AuditLogEntry[];
+  total: number;
+  page: number;
+  limit: number;
+  totalPages: number;
+}
+
+export interface AuditLogQuery {
+  page?: number;
+  limit?: number;
+  action?: string;
+  targetType?: AuditLogEntry['targetType'];
+}
+
+/** Admin-only, enforced server-side; a non-Admin call resolves as a 403 ApiError. */
+export const auditLogApi = {
+  getAuditLog: async (params: AuditLogQuery = {}): Promise<AuditLogResult> => {
+    const query = new URLSearchParams();
+    if (params.page) query.set('page', String(params.page));
+    if (params.limit) query.set('limit', String(params.limit));
+    if (params.action) query.set('action', params.action);
+    if (params.targetType) query.set('targetType', params.targetType);
+
+    const qs = query.toString();
+    return apiRequest<AuditLogResult>(`/audit-log${qs ? `?${qs}` : ''}`, {
+      fallbackError: 'Failed to load the audit log',
+    });
   },
 };

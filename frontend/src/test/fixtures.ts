@@ -33,11 +33,14 @@ interface RawFixtures {
   expectedStockStatus: Record<string, 'out' | 'low' | 'healthy'>;
   expectedExpiryStatus: Record<string, string>;
   expectedLowStockProbability: Record<string, number>;
+  expectedAtWasteRisk: Record<string, boolean>;
   expectedStats: {
     totalItems: number;
     lowStockItems: number;
     outOfStockItems: number;
     expiringSoon: number;
+    wasteRiskItems: number;
+    wasteRiskValue: number;
     categoryCounts: Record<string, number>;
     predictedSavings: number;
     carbonReduced: number;
@@ -70,6 +73,7 @@ export const fixtureItems: InventoryItem[] = raw.items.map(materialize);
 export const expectedStockStatus = raw.expectedStockStatus;
 export const expectedExpiryStatus = raw.expectedExpiryStatus;
 export const expectedLowStockProbability = raw.expectedLowStockProbability;
+export const expectedAtWasteRisk = raw.expectedAtWasteRisk;
 export const expectedStats = raw.expectedStats;
 
 /** Builds a single item with sensible defaults, for one-off cases. */

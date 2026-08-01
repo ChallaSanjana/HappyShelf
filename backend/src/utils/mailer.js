@@ -10,11 +10,17 @@ let warnedMissingConfig = false;
 function getTransporter() {
   if (transporter !== undefined) return transporter;
 
-  // Never open a real SMTP connection from the test suite. A developer's
+  // Never open a real SMTP connection from any test context. A developer's
   // .env usually holds working credentials, so without this every test that
-  // nudges an item into low stock would attempt an actual send — slow, and
-  // it delivers real mail to whoever is in the fixture.
-  if (process.env.NODE_ENV === 'test') {
+  // nudges an item into low stock — or, now, every password-reset test,
+  // which sends mail on every single run — would attempt an actual send:
+  // slow, and it delivers real mail to whoever is in the fixture.
+  //
+  // Both values, not just 'test': playwright.config.ts runs the E2E backend
+  // under NODE_ENV=test-e2e specifically so it's distinguishable from the
+  // unit-test backend (different in-memory store lifecycle), but it is still
+  // a test context and must be guarded here the same way.
+  if (process.env.NODE_ENV === 'test' || process.env.NODE_ENV === 'test-e2e') {
     transporter = null;
     return transporter;
   }
@@ -89,4 +95,37 @@ export async function sendStockAlert(recipients, item, status) {
   lines.push('', 'Reorder it from your HappyShelf dashboard.');
 
   await sendMail({ to: emails, subject, text: lines.join('\n') });
+}
+
+/**
+ * The password reset link.
+ *
+ * The raw token appears here and nowhere else — it is not logged, not
+ * persisted, and not echoed in any API response. Sent to a single recipient
+ * with no BCC, since only the account owner should ever see it.
+ */
+export async function sendPasswordResetEmail(recipient, rawToken) {
+  if (!recipient?.email) return;
+
+  const base = (process.env.APP_URL || 'http://localhost:5173').replace(/\/+$/, '');
+  const link = `${base}/#/reset-password?token=${encodeURIComponent(rawToken)}`;
+  const minutes = Number(process.env.PASSWORD_RESET_TTL_MINUTES) || 30;
+
+  const lines = [
+    `Hi${recipient.name ? ' ' + recipient.name : ''},`,
+    '',
+    'Someone asked to reset the password for your HappyShelf account.',
+    'Open the link below to choose a new one:',
+    '',
+    link,
+    '',
+    `The link expires in ${minutes} minutes and can only be used once.`,
+    "If this wasn't you, ignore this email — your password stays as it is.",
+  ];
+
+  await sendMail({
+    to: recipient.email,
+    subject: 'Reset your HappyShelf password',
+    text: lines.join('\n'),
+  });
 }

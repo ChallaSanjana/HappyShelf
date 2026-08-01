@@ -176,6 +176,63 @@ export function getExpiryStatus(item) {
 }
 
 /**
+ * Surplus that will not be consumed before it expires.
+ *
+ * Deliberately a *separate* axis from stock status and expiry status, not a
+ * change to either. An item can be "healthy" on stock (plenty of runway) and
+ * merely "expiring soon" on date, while the genuinely useful fact is that
+ * most of it is going in the bin: 1314 units consumed at 0.2/day cannot be
+ * used up before tomorrow, whatever the other two columns say.
+ *
+ * Returns 0 when there is no expiry date, no consumption to project, or the
+ * item will comfortably be finished in time.
+ */
+export function getSurplusAtExpiry(item) {
+  const days = getDaysToExpiry(item.expiry_date);
+  if (days === null) return 0;
+
+  const quantity = item.quantity ?? 0;
+  if (quantity <= 0) return 0;
+
+  const dailyUsage = item.daily_usage ?? 0;
+  // Nothing is being consumed, so nothing will be used before it expires —
+  // the whole quantity is at risk.
+  if (dailyUsage <= 0) return quantity;
+
+  // Already past its date: none of the remaining stock gets used.
+  if (days <= 0) return quantity;
+
+  const consumableBeforeExpiry = dailyUsage * days;
+  return Math.max(0, quantity - consumableBeforeExpiry);
+}
+
+/**
+ * Fraction (0–1) of an item's stock projected to be wasted. 0 when none is.
+ */
+export function getWasteRiskRatio(item) {
+  const quantity = item.quantity ?? 0;
+  if (quantity <= 0) return 0;
+  return getSurplusAtExpiry(item) / quantity;
+}
+
+/**
+ * Share of an item's stock that must be surplus before it is worth warning
+ * about. Below this the projection is too close to call — usage rates are
+ * estimates, and flagging a 2% overshoot would make the warning noise.
+ */
+export const WASTE_RISK_THRESHOLD = 0.1;
+
+/** True when a meaningful share of this item is projected to be wasted. */
+export function isAtWasteRisk(item) {
+  return getWasteRiskRatio(item) > WASTE_RISK_THRESHOLD;
+}
+
+/** Rupee value of the surplus, or 0 when no cost is recorded. */
+export function getWasteRiskValue(item) {
+  return getSurplusAtExpiry(item) * (item.cost_per_unit || 0);
+}
+
+/**
  * Items that are neither expiring nor running out — the stock that current
  * behaviour is successfully protecting from waste.
  */
@@ -200,6 +257,15 @@ export function calculateStats(items) {
   const outOfStockItems = list.filter((item) => getStockStatus(item) === 'out').length;
   const expiringSoon = list.filter((item) => isExpiredOrExpiringSoon(item.expiry_date)).length;
 
+  // Overstock relative to shelf life. A separate axis from the two above:
+  // an item can be healthy on stock and merely expiring soon on date while
+  // most of it is still headed for the bin.
+  const atRiskItems = list.filter(isAtWasteRisk);
+  const wasteRiskItems = atRiskItems.length;
+  const wasteRiskValue = Math.round(
+    atRiskItems.reduce((sum, item) => sum + getWasteRiskValue(item), 0)
+  );
+
   const categoryCounts = list.reduce((acc, item) => {
     acc[item.category] = (acc[item.category] || 0) + 1;
     return acc;
@@ -223,6 +289,8 @@ export function calculateStats(items) {
     lowStockItems,
     outOfStockItems,
     expiringSoon,
+    wasteRiskItems,
+    wasteRiskValue,
     categoryCounts,
     predictedSavings,
     carbonReduced,

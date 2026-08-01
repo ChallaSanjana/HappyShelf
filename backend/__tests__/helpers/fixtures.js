@@ -30,4 +30,5 @@ export const fixtureItems = raw.items.map(materialize);
 export const expectedStockStatus = raw.expectedStockStatus;
 export const expectedExpiryStatus = raw.expectedExpiryStatus;
 export const expectedLowStockProbability = raw.expectedLowStockProbability;
+export const expectedAtWasteRisk = raw.expectedAtWasteRisk;
 export const expectedStats = raw.expectedStats;

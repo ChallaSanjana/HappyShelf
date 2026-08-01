@@ -5,6 +5,11 @@ import {
   getDaysLeft,
   needsRestock,
   estimateLowStockProbability,
+  getSurplusAtExpiry,
+  getWasteRiskRatio,
+  isAtWasteRisk,
+  getWasteRiskValue,
+  WASTE_RISK_THRESHOLD,
   LOW_STOCK_DAYS,
   LOW_STOCK_PROBABILITY_BANDS,
   BASELINE_LOW_STOCK_PROBABILITY,
@@ -15,6 +20,7 @@ import {
   fixtureItems,
   expectedStockStatus,
   expectedLowStockProbability,
+  expectedAtWasteRisk,
   expectedStats,
   makeItem,
 } from '../../test/fixtures';
@@ -111,6 +117,70 @@ describe('estimateLowStockProbability — edge cases', () => {
   });
 });
 
+const daysFromNow = (days: number) => {
+  const d = new Date();
+  d.setDate(d.getDate() + days);
+  return d.toISOString();
+};
+
+describe('waste risk — shared contract with the backend', () => {
+  for (const [id, expected] of Object.entries(expectedAtWasteRisk)) {
+    test(`${id} -> ${expected ? 'at risk' : 'safe'}`, () => {
+      expect(isAtWasteRisk(byId(id))).toBe(expected);
+    });
+  }
+});
+
+describe('waste risk — edge cases', () => {
+  test('surplus is what cannot be consumed before the date', () => {
+    const item = makeItem({ quantity: 100, daily_usage: 2, expiry_date: daysFromNow(10) });
+    expect(Math.round(getSurplusAtExpiry(item))).toBe(80);
+    expect(Math.round(getWasteRiskRatio(item) * 100)).toBe(80);
+  });
+
+  test('an item that will be finished in time has no surplus', () => {
+    const item = makeItem({ quantity: 5, daily_usage: 2, expiry_date: daysFromNow(10) });
+    expect(getSurplusAtExpiry(item)).toBe(0);
+    expect(isAtWasteRisk(item)).toBe(false);
+  });
+
+  test('no expiry date means the question does not apply', () => {
+    const item = makeItem({ quantity: 1000, daily_usage: 0, expiry_date: null });
+    expect(getSurplusAtExpiry(item)).toBe(0);
+    expect(isAtWasteRisk(item)).toBe(false);
+  });
+
+  test('nothing consumed means all of it is at risk', () => {
+    expect(getSurplusAtExpiry(makeItem({ quantity: 40, daily_usage: 0, expiry_date: daysFromNow(3) }))).toBe(40);
+  });
+
+  test('already expired means none of it gets used', () => {
+    expect(getSurplusAtExpiry(makeItem({ quantity: 12, daily_usage: 5, expiry_date: daysFromNow(-2) }))).toBe(12);
+  });
+
+  test('zero quantity has nothing to waste', () => {
+    const item = makeItem({ quantity: 0, daily_usage: 1, expiry_date: daysFromNow(1) });
+    expect(getSurplusAtExpiry(item)).toBe(0);
+    expect(getWasteRiskRatio(item)).toBe(0);
+  });
+
+  test(`exactly at the ${WASTE_RISK_THRESHOLD} threshold is not flagged`, () => {
+    // Strictly greater-than, so an exact 0.10 stays safe.
+    expect(isAtWasteRisk(byId('healthy-1'))).toBe(false);
+  });
+
+  test('value is the surplus priced at cost, 0 without one', () => {
+    expect(getWasteRiskValue(makeItem({ quantity: 40, daily_usage: 0, expiry_date: daysFromNow(3), cost_per_unit: 25 }))).toBe(1000);
+    expect(getWasteRiskValue(makeItem({ quantity: 40, daily_usage: 0, expiry_date: daysFromNow(3), cost_per_unit: null }))).toBe(0);
+  });
+
+  test('does not change stock or expiry status', () => {
+    const item = byId('overstocked-perishable');
+    expect(getStockStatus(item)).toBe('healthy');
+    expect(isAtWasteRisk(item)).toBe(true);
+  });
+});
+
 describe('getDaysLeft', () => {
   test('is Infinity when nothing is consumed', () => {
     expect(getDaysLeft(makeItem({ quantity: 10, daily_usage: 0 }))).toBe(Infinity);
@@ -169,12 +239,20 @@ describe('calculateMetrics — shared contract with the backend', () => {
 
   test('lowStockItems counts both low and out-of-stock', () => {
     const stats = calculateMetrics(fixtureItems);
-    expect(stats.lowStockItems).toBe(3);
-    expect(stats.outOfStockItems).toBe(1);
+    // Derived from the shared fixtures, so adding a fixture case doesn't
+    // silently invalidate the assertion.
+    expect(stats.lowStockItems).toBe(expectedStats.lowStockItems);
+    expect(stats.outOfStockItems).toBe(expectedStats.outOfStockItems);
   });
 
   test('expiringSoon includes already-expired stock', () => {
-    expect(calculateMetrics(fixtureItems).expiringSoon).toBe(2);
+    expect(calculateMetrics(fixtureItems).expiringSoon).toBe(expectedStats.expiringSoon);
+  });
+
+  test('waste risk is reported alongside, not instead of, the other counts', () => {
+    const stats = calculateMetrics(fixtureItems);
+    expect(stats.wasteRiskItems).toBe(expectedStats.wasteRiskItems);
+    expect(stats.wasteRiskValue).toBe(expectedStats.wasteRiskValue);
   });
 
   test('a low-stock item with no expiry date is not counted as well managed', () => {
@@ -196,6 +274,8 @@ describe('calculateMetrics — shared contract with the backend', () => {
       lowStockItems: 0,
       outOfStockItems: 0,
       expiringSoon: 0,
+      wasteRiskItems: 0,
+      wasteRiskValue: 0,
       categoryCounts: {},
       predictedSavings: 0,
       carbonReduced: 0,

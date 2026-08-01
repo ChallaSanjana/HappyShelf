@@ -1,13 +1,13 @@
 import { useState } from 'react';
 import { InventoryItem } from '../services/api';
-import { AlertTriangle, Calendar } from 'lucide-react';
+import { AlertTriangle, Calendar, PackageX } from 'lucide-react';
 import { formatExpiryLabel } from '../utils/expiry';
-import { getDaysLeft } from '../utils/stock';
+import { getDaysLeft, getSurplusAtExpiry, getWasteRiskRatio } from '../utils/stock';
 
 interface AlertCardProps {
   title: string;
   items: InventoryItem[];
-  type: 'stock' | 'expiry';
+  type: 'stock' | 'expiry' | 'waste';
 }
 
 export const AlertCard = ({ title, items, type }: AlertCardProps) => {
@@ -20,16 +20,23 @@ export const AlertCard = ({ title, items, type }: AlertCardProps) => {
       const daysLeft = getDaysLeft(item);
       return Number.isFinite(daysLeft) ? `${daysLeft.toFixed(1)} days remaining` : 'N/A days remaining';
     }
+    if (type === 'waste') {
+      // The useful number is how much is projected to go unused, not the
+      // date or the runway — both of those look fine for these items.
+      const surplus = Math.round(getSurplusAtExpiry(item) * 10) / 10;
+      const pct = Math.round(getWasteRiskRatio(item) * 100);
+      return `~${surplus} ${item.unit} (${pct}%) may go unused`;
+    }
     // formatExpiryLabel correctly handles items that are already past their
     // expiry date ("Expired 3 days ago") instead of showing a nonsensical
     // negative day count like "Expires in -3 days".
     return formatExpiryLabel(item.expiry_date);
   };
 
-  const Icon = type === 'stock' ? AlertTriangle : Calendar;
-  const bgColor = type === 'stock' ? 'bg-orange-50' : 'bg-red-50';
-  const borderColor = type === 'stock' ? 'border-orange-200' : 'border-red-200';
-  const iconColor = type === 'stock' ? 'text-orange-600' : 'text-red-600';
+  const Icon = type === 'stock' ? AlertTriangle : type === 'waste' ? PackageX : Calendar;
+  const bgColor = type === 'stock' ? 'bg-orange-50' : type === 'waste' ? 'bg-amber-50' : 'bg-red-50';
+  const borderColor = type === 'stock' ? 'border-orange-200' : type === 'waste' ? 'border-amber-200' : 'border-red-200';
+  const iconColor = type === 'stock' ? 'text-orange-600' : type === 'waste' ? 'text-amber-600' : 'text-red-600';
 
   return (
     <div className={`${bgColor} border ${borderColor} rounded-xl p-6`}>

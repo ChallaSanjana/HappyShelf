@@ -89,6 +89,9 @@ export const authenticateToken = async (req, res, next) => {
       req.user = {
         userId: devUser.id,
         email: devUser.email,
+        // Carried for the audit log, which denormalises the actor so an
+        // entry still reads correctly after that member is removed.
+        name: devUser.name || null,
         role: devUser.role || 'Admin',
         householdId: devUser.household_id || devUser.id,
       };
@@ -96,7 +99,7 @@ export const authenticateToken = async (req, res, next) => {
     }
 
     const user = await User.findById(decoded.userId)
-      .select('email role is_active household_id token_version')
+      .select('email name role is_active household_id token_version')
       .lean();
 
     if (!user) {
@@ -112,6 +115,9 @@ export const authenticateToken = async (req, res, next) => {
     req.user = {
       userId: user._id.toString(),
       email: user.email,
+      // Carried for the audit log, which denormalises the actor so an entry
+      // still reads correctly after that member is removed.
+      name: user.name || null,
       role: user.role || 'Admin',
       householdId: (user.household_id || user._id).toString(),
     };

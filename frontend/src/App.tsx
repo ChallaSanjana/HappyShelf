@@ -3,11 +3,32 @@ import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { ToastProvider } from './contexts/ToastContext';
 import { Login } from './components/Login';
 import { Register } from './components/Register';
+import { ForgotPassword } from './components/ForgotPassword';
+import { ResetPassword } from './components/ResetPassword';
 import { Dashboard } from './components/Dashboard';
+import { useResetPasswordToken } from './hooks/useResetPasswordToken';
+
+type AuthScreen = 'login' | 'register' | 'forgot';
 
 const AppContent = () => {
-  const [showLogin, setShowLogin] = useState(true);
+  const [authScreen, setAuthScreen] = useState<AuthScreen>('login');
   const { user, isLoading, sessionMessage, clearSessionMessage } = useAuth();
+  const { isResetRoute, token: resetToken, clear: clearResetRoute } = useResetPasswordToken();
+
+  // Takes priority over everything else, including an active session — the
+  // token authorises the change on its own, and whoever is signed in on this
+  // browser right now may not be who the email was for.
+  if (isResetRoute) {
+    return (
+      <ResetPassword
+        token={resetToken}
+        onDone={() => {
+          clearResetRoute();
+          setAuthScreen('login');
+        }}
+      />
+    );
+  }
 
   if (isLoading) {
     return (
@@ -23,20 +44,29 @@ const AppContent = () => {
     // sessionMessage is set when the session ended on its own — expired,
     // revoked by a role change, or the account deactivated. Without it the
     // user would be dropped at the login screen with no idea why.
-    return showLogin ? (
+    if (authScreen === 'register') {
+      return (
+        <Register
+          onToggle={() => {
+            clearSessionMessage();
+            setAuthScreen('login');
+          }}
+        />
+      );
+    }
+
+    if (authScreen === 'forgot') {
+      return <ForgotPassword onBackToLogin={() => setAuthScreen('login')} />;
+    }
+
+    return (
       <Login
         onToggle={() => {
           clearSessionMessage();
-          setShowLogin(false);
+          setAuthScreen('register');
         }}
+        onForgotPassword={() => setAuthScreen('forgot')}
         notice={sessionMessage}
-      />
-    ) : (
-      <Register
-        onToggle={() => {
-          clearSessionMessage();
-          setShowLogin(true);
-        }}
       />
     );
   }
