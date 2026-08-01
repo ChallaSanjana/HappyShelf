@@ -1,0 +1,4 @@
+# Test-only dependencies. CI installs this on top of requirements.txt;
+# production installs requirements.txt alone.
+-r requirements.txt
+pytest>=8.0,<10.0

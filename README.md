@@ -623,6 +623,91 @@ race across workers and hide a decision worth making deliberately.
 Over the wire the field is now `householdId`, matching `User`, `ActionPlan`
 and the history models, which already used that name.
 
+## Deployment
+
+Three services: the SPA on **Vercel**, the API and the ML service on **Render**
+(both defined in [`render.yaml`](render.yaml)), and the database on **MongoDB
+Atlas**. Deploy in the order below — each step needs a URL from the one before.
+
+### 1. MongoDB Atlas
+
+Create a cluster and a database user, then take the `mongodb+srv://` string.
+
+Under **Network Access**, allow the API service's outbound address. Render's
+free tier does not give a service a static egress IP, so either allow
+`0.0.0.0/0` and rely on the database user's credentials, or move to a paid
+Render plan and allow its static IPs. Getting this wrong does not look like a
+permissions error from the client: Atlas accepts the TCP connection at its
+proxy and then aborts the TLS handshake, which the driver reports as
+`tlsv1 alert internal error (SSL alert number 80)`.
+
+Free M0 clusters auto-pause after ~60 days idle and produce that same error.
+
+### 2. Render — API and ML service
+
+Point **Blueprints → New Blueprint Instance** at this repository. `render.yaml`
+declares both services, generates `JWT_SECRET` and the shared
+`ML_SERVICE_TOKEN`, and pins Node 24 / Python 3.11.9 to match CI.
+
+Fill in the values it marks `sync: false`:
+
+| Variable | Value |
+|---|---|
+| `MONGODB_URI` | the Atlas string from step 1 |
+| `CORS_ORIGIN` | the Vercel URL from step 3 |
+| `APP_URL` | the same Vercel URL |
+| `ML_SERVICE_URL` | `https://happyshelf-ml.onrender.com`, after the ML service's first deploy |
+| `SMTP_*`, `EMAIL_FROM` | optional — unset, mail is logged to the service's stdout instead of sent |
+
+`CORS_ORIGIN` and `APP_URL` are only known after step 3, so expect to come
+back and redeploy the API once.
+
+Health checks are `/api/health` and `/health`. On the free tier both services
+idle after inactivity and take several seconds to wake, which is why
+`ML_SERVICE_TIMEOUT_MS` is raised to 15s here — a cold ML service would
+otherwise exceed the 5s default and the API would quietly serve its JS
+fallback instead of real predictions.
+
+### 3. Vercel — frontend
+
+Import the repository with **Root Directory** set to `frontend`;
+[`vercel.json`](frontend/vercel.json) supplies the rest.
+
+Set one environment variable:
+
+```
+VITE_API_URL = https://happyshelf-api.onrender.com/api
+```
+
+Vite inlines this **at build time**, so it is not a runtime setting — changing
+it requires a rebuild, not a restart. The `/api` suffix is required; the
+client appends paths like `/inventory/items` directly to it.
+
+If you enable preview deployments, add their origins to `CORS_ORIGIN` too, or
+previews will fail every API call with a CORS error while production works.
+
+### Verifying a deployment
+
+```bash
+curl https://happyshelf-api.onrender.com/api/health          # API is up
+curl https://happyshelf-ml.onrender.com/health               # ML service is up
+curl -i https://happyshelf-api.onrender.com/api/inventory/items   # expect 401
+```
+
+Then in the browser: register an account, add an item, consume it, and open
+Predictions. The badge there reads **Live ML Model** when the API reached the
+ML service and **Heuristic Fallback** when it did not — the quickest check
+that `ML_SERVICE_URL` and the shared token are right, since a
+misconfiguration degrades silently by design rather than erroring.
+
+### Still to do on a public deployment
+
+The SPA has no Content-Security-Policy. The API deliberately disables one
+(it serves only JSON), so a policy belongs on whatever hosts `frontend/dist`
+— `vercel.json` sets the other standard headers but not CSP, because a policy
+tight enough to be worth having needs to be verified against the live bundle,
+including the blob: URLs jsPDF uses to build reports.
+
 ## Building for Production
 
 ```bash

@@ -1,0 +1,117 @@
+# Render Blueprint — the backend API and the ML service.
+#
+# The frontend is not here: it is a static SPA deployed to Vercel, which reads
+# VITE_API_URL at *build* time (Vite inlines it into the bundle), so it is
+# configured in the Vercel project rather than at runtime.
+#
+# Apply with: Render Dashboard -> Blueprints -> New Blueprint Instance, pointed
+# at this repository. Values marked `sync: false` are deliberately not stored
+# in version control and must be filled in on first apply.
+
+envVarGroups:
+  # ML_SERVICE_TOKEN has to be byte-identical on both services -- the ML
+  # service compares it with hmac.compare_digest and returns 401 otherwise.
+  # A shared group generates it once rather than asking for the same secret
+  # to be pasted into two places correctly.
+  - name: happyshelf-shared
+    envVars:
+      - key: ML_SERVICE_TOKEN
+        generateValue: true
+
+services:
+  # ---------------------------------------------------------------- backend
+  - type: web
+    name: happyshelf-api
+    runtime: node
+    rootDir: backend
+    plan: free
+    # npm ci, not npm install: the lockfile is the tested dependency set, and
+    # bcrypt 6 builds a native binary whose toolchain should not drift.
+    buildCommand: npm ci
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - fromGroup: happyshelf-shared
+
+      # Turns a missing JWT_SECRET and an unreachable database into hard
+      # startup failures instead of silent degradation into the in-memory
+      # store. See backend/src/config/database.js.
+      - key: NODE_ENV
+        value: production
+
+      # Pinned to the version CI validates. Left floating, a Render default
+      # could differ from the runtime bcrypt's native module was built for.
+      - key: NODE_VERSION
+        value: "24"
+
+      - key: JWT_SECRET
+        generateValue: true
+
+      # mongodb+srv connection string, including credentials -- never in git.
+      # Atlas must also allow this service's outbound IP; see the README.
+      - key: MONGODB_URI
+        sync: false
+
+      # The deployed frontend's origin, e.g. https://happyshelf.vercel.app.
+      # Comma-separated if there is more than one (preview deployments).
+      # Without this the API rejects the browser with a CORS error, because
+      # the default allowlist is localhost only.
+      - key: CORS_ORIGIN
+        sync: false
+
+      # Same origin as CORS_ORIGIN. Used to build password-reset links, and
+      # unlike the two above it fails *quietly* -- mail still sends, the link
+      # just points at localhost.
+      - key: APP_URL
+        sync: false
+
+      # Full https URL of the ML service below, e.g.
+      # https://happyshelf-ml.onrender.com -- set after its first deploy.
+      # Render cannot interpolate a sibling service's URL into a string, and
+      # the backend falls back to its JS heuristic if this is wrong, so a
+      # mistake here degrades quietly rather than erroring.
+      - key: ML_SERVICE_URL
+        sync: false
+
+      # Render's free tier idles services after inactivity; a cold ML service
+      # can take longer than the 5s default to answer its first request.
+      - key: ML_SERVICE_TIMEOUT_MS
+        value: "15000"
+
+      # Render terminates TLS at its edge and forwards one hop, so
+      # X-Forwarded-For is trustworthy exactly one deep. Without this,
+      # rate limiting keys every anonymous request to the proxy's address.
+      - key: TRUST_PROXY
+        value: "1"
+
+      # SMTP is optional: unset, the app logs mail to stdout instead of
+      # sending. Password reset then still works, but the link only appears
+      # in the service logs -- set these for real delivery.
+      - key: SMTP_HOST
+        sync: false
+      - key: SMTP_PORT
+        sync: false
+      - key: SMTP_USER
+        sync: false
+      - key: SMTP_PASS
+        sync: false
+      - key: EMAIL_FROM
+        sync: false
+
+  # ------------------------------------------------------------- ML service
+  - type: web
+    name: happyshelf-ml
+    runtime: python
+    rootDir: ml_service
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - fromGroup: happyshelf-shared
+
+      # Matches the CI matrix. Pinning matters more than usual here: the
+      # cached models are joblib pickles, and scikit-learn does not promise
+      # they load across versions.
+      - key: PYTHON_VERSION
+        value: "3.11.9"

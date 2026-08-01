@@ -1,8 +1,15 @@
-fastapi
-uvicorn
-pandas
-numpy
-scikit-learn
-joblib
-httpx
-pytest
+# Runtime dependencies only. Test-only packages live in requirements-dev.txt
+# so a production image does not carry pytest and its tree.
+#
+# Upper bounds are deliberate. These were unpinned, which meant a deploy six
+# months from now could resolve a new scikit-learn major -- and the cached
+# models are joblib pickles, which scikit-learn does not promise to load
+# across versions. Lower bounds are the versions CI has been validating on
+# Python 3.11.
+fastapi>=0.115,<1.0
+uvicorn>=0.30,<1.0
+pandas>=2.2,<4.0
+numpy>=1.26,<3.0
+scikit-learn>=1.5,<2.0
+joblib>=1.4,<2.0
+httpx>=0.27,<1.0
